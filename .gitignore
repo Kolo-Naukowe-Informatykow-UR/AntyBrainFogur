@@ -1,0 +1,34 @@
+# ─── ESP-IDF ──────────────────────────────────────────────────────────────────
+build/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
+.component_hash
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# ─── IDE ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.iml
+.clangd/
+.cache/
+compile_commands.json
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Logi i artefakty ─────────────────────────────────────────────────────────
+*.log
+*.map
+*.elf
+*.bin
+*.hex
