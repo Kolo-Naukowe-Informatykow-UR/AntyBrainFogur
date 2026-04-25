@@ -6,6 +6,8 @@
 
 Wbudowany system monitorowania środowiska i wspomagania funkcji poznawczych oparty na ESP32 — ESP32-S3 jako standalone device z ekranem, ESP32-C6 jako Thread border router, ESP32-H2 jako satelitarne węzły sieci.
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](#)
+
 <br>
 
 ## Wspierane platformy i protokoły
