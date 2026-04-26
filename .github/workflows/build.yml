@@ -1,0 +1,36 @@
+name: Build check
+
+on:
+  push:
+    branches: [main, dev, "feature/**", "fix/**", "refactor/**"]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  thread-router:
+    name: thread-router (ESP32-C6)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.3
+          target: esp32c6
+          path: firmware/thread-router
+
+  thread-satellite:
+    name: thread-satellite (ESP32-H2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.3
+          target: esp32h2
+          path: firmware/thread-satellite
