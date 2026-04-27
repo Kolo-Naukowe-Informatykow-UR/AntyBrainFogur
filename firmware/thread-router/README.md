@@ -4,16 +4,16 @@
 
 # thread-router
 
-Thread border router systemu AntyBrainFogur — łączy sieć Thread z infrastrukturą Wi-Fi i udostępnia węzły satelitarne ekosystemom Matter.
+The Thread border router of the AntyBrainFogur system — bridges the Thread network with Wi-Fi infrastructure and exposes satellite nodes to Matter ecosystems.
 
 <br>
 
-## Platforma
+## Platform
 
 <table align="center">
   <tr>
     <th>Hardware</th>
-    <th>Protokoły</th>
+    <th>Protocols</th>
   </tr>
   <tr>
     <td align="center">
@@ -30,68 +30,68 @@ Thread border router systemu AntyBrainFogur — łączy sieć Thread z infrastru
 
 <br>
 
-**Płytka:** Waveshare ESP32-C6-Zero (`27035`)  
+**Board:** Waveshare ESP32-C6-Zero (`27035`)  
 **MCU:** ESP32-C6, RISC-V single-core @ 160 MHz, Wi-Fi 6 (802.11ax), BLE 5, IEEE 802.15.4  
-**Rola w systemie:** Thread border router — most między siecią Thread węzłów H2 a infrastrukturą Wi-Fi/Matter. Agreguje dane z satelitów i przekazuje je do węzła S3 oraz ekosystemów smart home.
+**Role in the system:** Thread border router — bridge between the H2 Thread node network and Wi-Fi/Matter infrastructure. Aggregates data from satellites and forwards it to the S3 node and smart home ecosystems.
 
 <br>
 
-## Wymagania
+## Requirements
 
 <table>
   <tr>
-    <th>Narzędzie</th>
-    <th>Wersja</th>
-    <th>Do czego</th>
+    <th>Tool</th>
+    <th>Version</th>
+    <th>Purpose</th>
   </tr>
   <tr>
     <td><img src="https://img.shields.io/badge/ESP--IDF-E7352C?style=flat-square&logo=espressif&logoColor=white" height="20" alt="ESP-IDF"></td>
     <td><code>v5.x</code></td>
-    <td>Cały firmware, narzędzia budowania, flash</td>
+    <td>Full firmware stack, build tools, flash</td>
   </tr>
   <tr>
     <td><img src="https://img.shields.io/badge/CMake-064F8C?style=flat-square&logo=cmake&logoColor=white" height="20" alt="CMake"></td>
     <td><code>≥ 3.16</code></td>
-    <td>System budowania</td>
+    <td>Build system</td>
   </tr>
   <tr>
     <td><img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" height="20" alt="Python"></td>
     <td><code>≥ 3.8</code></td>
-    <td>Skrypty IDF</td>
+    <td>IDF scripts</td>
   </tr>
 </table>
 
-> **Środowisko budowania:** wymagany **Linux** lub **WSL2** (Ubuntu 22.04+). Matter SDK nie wspiera natywnego buildu na Windows.
+> **Build environment:** Linux or **WSL2** (Ubuntu 22.04+) required. Matter SDK does not support native Windows builds.
 
 <br>
 
-## Szybki start
+## Quick Start
 
 ```bash
-# 1. Wejdź do katalogu projektu
+# 1. Enter the project directory
 cd firmware/thread-router
 
-# 2. Załaduj środowisko IDF (raz na sesję terminala)
+# 2. Load the IDF environment (once per terminal session)
 . $IDF_PATH/export.sh
 
-# 3. Skonfiguruj target, zbuduj i wgraj
+# 3. Set target, build and flash
 idf.py set-target esp32c6
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-Port `/dev/ttyUSB0` to standardowy port ESP32 na Linux. Sprawdź swój: `ls /dev/ttyUSB*`
+`/dev/ttyUSB0` is the standard ESP32 port on Linux. Check yours: `ls /dev/ttyUSB*`
 
 <br>
 
-## Struktura projektu
+## Project structure
 
 ```
 thread-router/
-├── main/                   # Punkt wejścia aplikacji
+├── main/                   # Application entry point
 │   ├── main.c
 │   └── CMakeLists.txt
-├── components/             # Komponenty lokalne (OpenThread, border router)
+├── components/             # Local components (OpenThread, border router)
 ├── CMakeLists.txt
 └── sdkconfig.defaults
 ```

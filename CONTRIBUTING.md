@@ -2,35 +2,35 @@
 
 <br>
 
-## Od zera — środowisko deweloperskie
+## From scratch — development environment
 
-### 1. Na czym pracować — Linux, WSL czy Windows?
+### 1. What to work on — Linux, WSL or Windows?
 
-Zależy od tego który subprojekt chcesz rozwijać.
+Depends on which subproject you want to develop.
 
-| Subprojekt | Windows natywny | WSL2 / Linux |
+| Subproject | Native Windows | WSL2 / Linux |
 |------------|:-:|:-:|
 | `matter-display` (ESP32-S3) | ✗ | ✓ |
 | `thread-router` (ESP32-C6) | ✓ | ✓ |
 | `thread-satellite` (ESP32-H2) | ✓ | ✓ |
 
-**matter-display** używa **esp-matter** który nie wspiera Windows — wymagany Linux lub WSL2.  
-**thread-router** i **thread-satellite** używają czystego OpenThread — budują się na wszystkim.
+**matter-display** uses **esp-matter** which does not support Windows — Linux or WSL2 is required.  
+**thread-router** and **thread-satellite** use plain OpenThread — they build everywhere, including native Windows.
 
 <br>
 
-### 2a. Instalacja ESP-IDF na Linux / WSL2
+### 2a. Installing ESP-IDF on Linux / WSL2
 
-Oficjalna dokumentacja: **https://docs.espressif.com/projects/esp-idf/en/stable/esp32/get-started/**
+Official documentation: **https://docs.espressif.com/projects/esp-idf/en/stable/esp32/get-started/**
 
-Na WSL2 najpierw zainstaluj zależności systemowe:
+On WSL2, first install the system dependencies:
 
 ```bash
 sudo apt update && sudo apt install -y git wget flex bison gperf python3 python3-pip \
 python3-venv cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0
 ```
 
-Następnie sklonuj i zainstaluj ESP-IDF:
+Then clone and install ESP-IDF:
 
 ```bash
 git clone --recursive https://github.com/espressif/esp-idf.git
@@ -39,25 +39,25 @@ cd esp-idf
 . ./export.sh
 ```
 
-> **Port USB w WSL2:** WSL2 domyślnie nie widzi urządzeń USB. Żeby flashować musisz przekazać port przez **usbipd**: https://learn.microsoft.com/en-us/windows/wsl/connect-usb
+> **USB port in WSL2:** WSL2 does not see USB devices by default. To flash from WSL2 you need to forward the USB port via **usbipd**: https://learn.microsoft.com/en-us/windows/wsl/connect-usb
 
-> **`export.sh`** działa tylko w bieżącej sesji terminala — wywołuj przy każdym nowym oknie, albo dodaj do `.bashrc`.
-
-<br>
-
-### 2b. Instalacja ESP-IDF na Windows (tylko thread-router i thread-satellite)
-
-Espressif udostępnia gotowy instalator dla Windows — nie musisz nic robić ręcznie.
-
-Pobierz instalator: **https://dl.espressif.com/dl/esp-idf/**
-
-Instalator sam pobiera toolchain, Python i wszystkie zależności. Po instalacji otwórz **ESP-IDF CMD** lub **ESP-IDF PowerShell** ze Start Menu — środowisko jest już załadowane, `idf.py` działa od razu.
-
-> **Port na Windows:** zamiast `/dev/ttyUSB0` używasz `COM*` — sprawdź numer w Menedżerze urządzeń pod "Porty (COM i LPT)". Podmień w komendach flash: `idf.py -p COM3 flash monitor`
+> **`export.sh`** only works for the current terminal session — run it again in every new window, or add it to `.bashrc`.
 
 <br>
 
-### 3. Sklonuj repozytorium
+### 2b. Installing ESP-IDF on Windows (thread-router and thread-satellite only)
+
+Espressif provides a ready-to-use Windows installer — no manual setup needed.
+
+Download the installer: **https://dl.espressif.com/dl/esp-idf/**
+
+The installer downloads the toolchain, Python, and all dependencies automatically. After installation, open **ESP-IDF CMD** or **ESP-IDF PowerShell** from the Start Menu — the environment is already loaded and `idf.py` works immediately.
+
+> **Port on Windows:** instead of `/dev/ttyUSB0` you use `COM*` — check the port number in Device Manager under "Ports (COM & LPT)". Replace it in flash commands: `idf.py -p COM3 flash monitor`
+
+<br>
+
+### 3. Clone the repository
 
 ```bash
 git clone https://github.com/kni-informatycy/AntyBrainFogur.git
@@ -66,11 +66,11 @@ cd AntyBrainFogur
 
 <br>
 
-### 4. Zbuduj wybrany subprojekt
+### 4. Build the chosen subproject
 
-Każdy subprojekt to osobny projekt ESP-IDF z własnym targetem.
+Each subproject is a separate ESP-IDF project with its own target.
 
-**matter-display** (ESP32-S3, ekran dotykowy):
+**matter-display** (ESP32-S3, touchscreen display):
 ```bash
 cd firmware/matter-display
 . $IDF_PATH/export.sh
@@ -88,7 +88,7 @@ idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-**thread-satellite** (ESP32-H2, węzły sensorowe):
+**thread-satellite** (ESP32-H2, sensor nodes):
 ```bash
 cd firmware/thread-satellite
 . $IDF_PATH/export.sh
@@ -97,86 +97,86 @@ idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-Port `/dev/ttyUSB0` to standardowy port ESP32 na Linux. Sprawdź swój: `ls /dev/ttyUSB*`
+`/dev/ttyUSB0` is the standard ESP32 port on Linux. Check yours: `ls /dev/ttyUSB*`
 
 <br>
 
 ## Workflow
 
-Pracujemy na branchach. Żadnych commitów bezpośrednio na `main`.
+We work on branches. No direct commits to `main`.
 
 ```
-main              ← stabilny, zawsze buildowalny
-dev               ← branch integracyjny
-feature/<nazwa>   ← nowa funkcjonalność
-fix/<nazwa>       ← poprawka błędu
-refactor/<nazwa>  ← refactoring bez zmiany zachowania
+main              ← stable, always buildable
+dev               ← integration branch
+feature/<name>    ← new functionality
+fix/<name>        ← bug fixes
+refactor/<name>   ← refactoring without behavior changes
 ```
 
-Standardowy flow:
+Standard flow:
 
 ```bash
-# 1. Utwórz branch od dev
+# 1. Create a branch from dev
 git checkout dev
 git pull
-git checkout -b feature/nazwa-funkcji
+git checkout -b feature/feature-name
 
-# 2. Wprowadź zmiany, commituj regularnie
+# 2. Make changes, commit regularly
 git add .
-git commit -m "feat(scope): opis"
+git commit -m "feat(scope): description"
 
-# 3. Wypchnij branch i otwórz PR do dev
-git push -u origin feature/nazwa-funkcji
+# 3. Push the branch and open a PR to dev
+git push -u origin feature/feature-name
 ```
 
 <br>
 
-## Konwencja commitów
+## Commit convention
 
-Format: `typ(scope): krótki opis`
+Format: `type(scope): short description`
 
-| Typ | Kiedy |
-|-----|-------|
-| `feat` | nowa funkcjonalność |
-| `fix` | poprawka błędu |
-| `refactor` | zmiana kodu bez wpływu na zachowanie |
-| `test` | testy |
-| `docs` | dokumentacja |
-| `chore` | narzędzia, konfiguracja, porządki |
+| Type | When |
+|------|------|
+| `feat` | new functionality |
+| `fix` | bug fix |
+| `refactor` | code change without behavior impact |
+| `test` | tests |
+| `docs` | documentation |
+| `chore` | tooling, configuration, housekeeping |
 
-**Scope** to nazwa subprojektu: `matter-display`, `thread-router`, `thread-satellite` lub `repo` dla zmian ogólnych.
+**Scope** is the subproject name: `matter-display`, `thread-router`, `thread-satellite`, or `repo` for general changes.
 
-Przykłady:
+Examples:
 ```
-feat(thread-satellite): dodanie odczytu temperatury z SHT40
-fix(thread-router): naprawa restartu przy utracie sieci Thread
-docs(matter-display): aktualizacja opisu pinout LCD
+feat(thread-satellite): add SHT40 temperature reading
+fix(thread-router): fix restart on Thread network loss
+docs(matter-display): update LCD pinout description
 ```
 
 <br>
 
-## Pull Requesty
+## Pull Requests
 
-- PR zawsze do `dev`, nigdy bezpośrednio do `main`
-- Przed otwarciem PR upewnij się że projekt się buduje (`idf.py build`)
-- Opis PR powinien zawierać co zostało zmienione i dlaczego
-- Jeden PR — jedna odpowiedzialność
+- PRs always target `dev`, never directly `main`
+- Before opening a PR make sure the project builds (`idf.py build`)
+- PR description should explain what changed and why
+- One PR — one responsibility
 
 <br>
 
-## CI — automatyczny build check
+## CI — automated build check
 
-CI odpala się automatycznie na każdy push — na `feature/*`, `fix/*`, `refactor/*`, `dev` i `main`. Wypchnij branch i wejdź w zakładkę **Actions** na GitHubie — zobaczysz czy build przeszedł zanim otworzysz PR.
+CI runs automatically on every push — on `feature/*`, `fix/*`, `refactor/*`, `dev`, and `main`. Push your branch and check the **Actions** tab on GitHub to see whether the build passed before opening a PR.
 
-| Subprojekt | CI |
+| Subproject | CI |
 |------------|:--:|
 | `thread-router` (ESP32-C6) | ✓ |
 | `thread-satellite` (ESP32-H2) | ✓ |
 | `matter-display` (ESP32-S3) | ✗ |
 
-`matter-display` jest wyłączony z CI — esp-matter wymaga osobnego setupu i znacznie dłuższego czasu buildu. Zostanie dodany gdy subprojekt będzie miał pierwszą realną logikę.
+`matter-display` is excluded from CI — esp-matter requires a separate setup and significantly longer build times. It will be added once the subproject has its first real logic.
 
-Przed otwarciem PR sprawdź lokalnie czy projekt się buduje. Zacznij od usunięcia poprzedniego buildu żeby mieć pewność że budujesz od zera:
+Before opening a PR, verify locally that the project builds. Start by removing the previous build directory to ensure a clean build from scratch:
 
 ```bash
 # thread-router
@@ -194,22 +194,22 @@ rm -rf build
 idf.py build
 ```
 
-Jeśli `idf.py build` kończy się bez błędów — możesz pushować.
+If `idf.py build` finishes without errors — you are ready to push.
 
-Po pushu CI automatycznie zbuduje projekt na GitHubie. Sprawdź wynik z terminala (wymaga [GitHub CLI](https://cli.github.com/)):
+After pushing, CI will build the project automatically on GitHub. Check the result from the terminal (requires [GitHub CLI](https://cli.github.com/)):
 
 ```bash
 gh run list --branch $(git branch --show-current)
 ```
 
-Status `success` — wszystko gra, możesz otwierać PR.  
-Status `failure` — build się nie zbudował, wróć do kodu, popraw błędy i pushuj ponownie. Nie otwieraj PR z czerwonym CI.
+Status `success` — everything is fine, you can open a PR.  
+Status `failure` — the build failed. Go back to the code, fix the errors, and push again. Do not open a PR with a failing CI.
 
 <br>
 
-## Linki
+## Links
 
 - [ESP-IDF Getting Started](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/get-started/)
 - [esp-matter SDK](https://github.com/espressif/esp-matter)
-- [OpenThread na ESP32](https://docs.espressif.com/projects/esp-idf/en/stable/esp32h2/api-guides/openthread.html)
-- [usbipd — USB w WSL2](https://learn.microsoft.com/en-us/windows/wsl/connect-usb)
+- [OpenThread on ESP32](https://docs.espressif.com/projects/esp-idf/en/stable/esp32h2/api-guides/openthread.html)
+- [usbipd — USB in WSL2](https://learn.microsoft.com/en-us/windows/wsl/connect-usb)

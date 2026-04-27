@@ -4,16 +4,16 @@
 
 # matter-display
 
-Główny węzeł systemu AntyBrainFogur — standalone device z dotykowym ekranem LCD, interfejsem użytkownika i bramką Matter do ekosystemów smart home.
+The main node of the AntyBrainFogur system — standalone device with a touchscreen LCD display, user interface, and Matter gateway to smart home ecosystems.
 
 <br>
 
-## Platforma
+## Platform
 
 <table align="center">
   <tr>
     <th>Hardware</th>
-    <th>Protokoły</th>
+    <th>Protocols</th>
   </tr>
   <tr>
     <td align="center">
@@ -29,69 +29,69 @@ Główny węzeł systemu AntyBrainFogur — standalone device z dotykowym ekrane
 
 <br>
 
-**Płytka:** Waveshare ESP32-S3-Touch-LCD-2.8 (`27690`)  
-**Wyświetlacz:** IPS 2,8" 240×320, pojemnościowy panel dotykowy  
+**Board:** Waveshare ESP32-S3-Touch-LCD-2.8 (`27690`)  
+**Display:** IPS 2.8" 240×320, capacitive touchscreen  
 **MCU:** ESP32-S3, dual-core Xtensa LX7 @ 240 MHz, 512 KB SRAM + PSRAM  
-**Rola w systemie:** punkt interakcji z użytkownikiem, wyświetlanie danych ze wszystkich węzłów, integracja z Google Home / Home Assistant przez Matter
+**Role in the system:** user interaction point, displays data from all nodes, integrates with Google Home / Home Assistant via Matter
 
 <br>
 
-## Wymagania
+## Requirements
 
 <table>
   <tr>
-    <th>Narzędzie</th>
-    <th>Wersja</th>
-    <th>Do czego</th>
+    <th>Tool</th>
+    <th>Version</th>
+    <th>Purpose</th>
   </tr>
   <tr>
     <td><img src="https://img.shields.io/badge/ESP--IDF-E7352C?style=flat-square&logo=espressif&logoColor=white" height="20" alt="ESP-IDF"></td>
     <td><code>v5.x</code></td>
-    <td>Cały firmware, narzędzia budowania, flash</td>
+    <td>Full firmware stack, build tools, flash</td>
   </tr>
   <tr>
     <td><img src="https://img.shields.io/badge/CMake-064F8C?style=flat-square&logo=cmake&logoColor=white" height="20" alt="CMake"></td>
     <td><code>≥ 3.16</code></td>
-    <td>System budowania</td>
+    <td>Build system</td>
   </tr>
   <tr>
     <td><img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" height="20" alt="Python"></td>
     <td><code>≥ 3.8</code></td>
-    <td>Skrypty IDF</td>
+    <td>IDF scripts</td>
   </tr>
 </table>
 
-> **Środowisko budowania:** wymagany **Linux** lub **WSL2** (Ubuntu 22.04+). Matter SDK nie wspiera natywnego buildu na Windows.
+> **Build environment:** Linux or **WSL2** (Ubuntu 22.04+) required. Matter SDK does not support native Windows builds.
 
 <br>
 
-## Szybki start
+## Quick Start
 
 ```bash
-# 1. Wejdź do katalogu projektu
+# 1. Enter the project directory
 cd firmware/matter-display
 
-# 2. Załaduj środowisko IDF (raz na sesję terminala)
+# 2. Load the IDF environment (once per terminal session)
 . $IDF_PATH/export.sh
 
-# 3. Skonfiguruj target, zbuduj i wgraj
+# 3. Set target, build and flash
 idf.py set-target esp32s3
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-Port `/dev/ttyUSB0` to standardowy port ESP32 na Linux. Sprawdź swój: `ls /dev/ttyUSB*`
+`/dev/ttyUSB0` is the standard ESP32 port on Linux. Check yours: `ls /dev/ttyUSB*`
 
 <br>
 
-## Struktura projektu
+## Project structure
 
 ```
 matter-display/
-├── main/                   # Punkt wejścia aplikacji
+├── main/                   # Application entry point
 │   ├── main.c
 │   └── CMakeLists.txt
-├── components/             # Komponenty lokalne (UI, sterownik LCD, Matter)
+├── components/             # Local components (UI, LCD driver, Matter)
 ├── CMakeLists.txt
 └── sdkconfig.defaults
 ```
