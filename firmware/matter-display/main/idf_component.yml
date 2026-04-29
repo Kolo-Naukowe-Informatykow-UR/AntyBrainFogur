@@ -1,0 +1,5 @@
+dependencies:
+  idf: ">=5.3"
+  esp32s3-waveshare27690-bsp:
+    git: "https://github.com/n02b3rt/esp32s3-waveshare27690-bsp.git"
+  # kni_ui is a LOCAL component at components/kni_ui/ — do not add here
