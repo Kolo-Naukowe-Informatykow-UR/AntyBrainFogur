@@ -1,64 +1,87 @@
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sys/time.h>
+#include <sys/select.h>
+#include <unistd.h>
+#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "bsp/bsp.h"
-#include "kni_ui/kni_ui.h"
+#include "ui.h"
 
 static const char *TAG = "matter-display";
 
-/* ── Button callback ──────────────────────────────────────────────────────── */
-
-static void on_test_btn(lv_event_t *e)
+/* Fallback: set RTC to compile time if not already set. */
+static void init_time(void)
 {
-    /* first child of the button is its label */
-    lv_obj_t *btn   = lv_event_get_target(e);
-    lv_obj_t *label = lv_obj_get_child(btn, 0);
+    time_t now;
+    time(&now);
+    if (now > 1000000000UL) return;
 
-    static bool toggled = false;
-    toggled = !toggled;
-    lv_label_set_text(label, toggled ? "OK!" : "Test Button");
-    ESP_LOGI(TAG, "Button pressed — toggled: %s", toggled ? "ON" : "OFF");
+    struct tm t = {};
+    char mon[4];
+    int  day, year, h, m, s;
+    sscanf(__DATE__, "%3s %d %d", mon, &day, &year);
+    sscanf(__TIME__, "%d:%d:%d", &h,   &m,   &s);
+
+    static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    const char *p = strstr(months, mon);
+    t.tm_mon   = p ? (int)(p - months) / 3 : 0;
+    t.tm_mday  = day;
+    t.tm_year  = year - 1900;
+    t.tm_hour  = h;
+    t.tm_min   = m;
+    t.tm_sec   = s;
+    t.tm_isdst = -1;
+
+    struct timeval tv = { .tv_sec = mktime(&t) };
+    settimeofday(&tv, NULL);
+    ESP_LOGI(TAG, "RTC set to compile time: %s %s", __DATE__, __TIME__);
 }
 
-/* ── Tab builder ──────────────────────────────────────────────────────────── */
-
-static void build_test_tab(lv_obj_t *panel)
+/* Wait up to 3 s for "T<unix_timestamp>\n" on stdin (UART0).
+ * Send from Pi shell:  echo "T$(date +%s)" > /dev/ttyACM0
+ * This overwrites the compile-time fallback with the real wall clock. */
+static void sync_time_uart(void)
 {
-    /* Card — display / BSP status */
-    lv_obj_t *card = kni_ui_card(panel, "DISPLAY TEST");
-    kni_ui_kv_row(card, "Display",  "ST7789 240x320");
-    kni_ui_kv_row(card, "Touch",    "CST328 I2C");
-    kni_ui_kv_row(card, "BSP",      "waveshare27690");
-    kni_ui_kv_row(card, "PSRAM",    "8 MB Octal");
-    kni_ui_text(card,
-        "If you can read this - display and touch are working.",
-        KNI_UI_C_SUBTEXT);
+    ESP_LOGI(TAG, "Waiting 3 s for UART time sync  (send: T%llu)",
+             (unsigned long long)time(NULL));
 
-    /* Styled button — stacks below the card thanks to panel flex layout */
-    kni_ui_btn(panel, "Test Button", on_test_btn, NULL);
+    fd_set rfds;
+    struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
+    FD_ZERO(&rfds);
+    FD_SET(STDIN_FILENO, &rfds);
+
+    if (select(STDIN_FILENO + 1, &rfds, NULL, NULL, &tv) <= 0) {
+        ESP_LOGI(TAG, "No UART sync — keeping compile-time clock");
+        return;
+    }
+
+    char buf[24] = {0};
+    int  n = (int)read(STDIN_FILENO, buf, sizeof(buf) - 1);
+    if (n < 2 || buf[0] != 'T') return;
+
+    /* strip newline / CR */
+    for (int i = 0; i < n; i++) {
+        if (buf[i] == '\r' || buf[i] == '\n') { buf[i] = '\0'; break; }
+    }
+
+    time_t ts = (time_t)atol(buf + 1);
+    if (ts < 1700000000L) return;          /* sanity: must be after Nov 2023 */
+
+    struct timeval stv = { .tv_sec = ts };
+    settimeofday(&stv, NULL);
+    ESP_LOGI(TAG, "RTC synced via UART: %s", ctime(&ts));
 }
-
-/* ── Tab config ───────────────────────────────────────────────────────────── */
-
-static const kni_ui_tab_t tabs[] = {
-    { .label = "TEST", .build = build_test_tab },
-};
-
-static const kni_ui_cfg_t ui_cfg = {
-    .title     = "KNI",
-    .subtitle  = "AntyBrainFogUR",
-    .logo      = NULL,
-    .splash_ms = 2500,
-    .tabs      = tabs,
-    .tab_count = 1,
-};
-
-/* ── Entry point ──────────────────────────────────────────────────────────── */
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Booting matter-display v0.1.0");
+    ESP_LOGI(TAG, "Booting matter-display...");
+
+    init_time();
+    sync_time_uart();
 
     ESP_ERROR_CHECK(bsp_init());
     ESP_ERROR_CHECK(bsp_display_start());
@@ -71,7 +94,7 @@ void app_main(void)
     lv_indev_set_scroll_throw(indev, 8);
 
     if (bsp_lvgl_lock(-1)) {
-        ESP_ERROR_CHECK(kni_ui_start(&ui_cfg));
+        ESP_ERROR_CHECK(ui_start(2500));
         bsp_lvgl_unlock();
     }
 

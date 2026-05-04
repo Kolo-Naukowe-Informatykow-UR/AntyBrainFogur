@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="380" viewBox="0 0 600 380" fill="none">
+  <title>AntyBrainFogUR — stacked wordmark</title>
+  
+  <g transform="translate(228, 30) scale(3)">
+    <circle cx="24" cy="24" r="20" stroke="#E8EEF2" stroke-width="2.25"></circle>
+    <path d="M9 31 Q14 28 19 31 T29 31 T39 31" stroke="#5EE6C1" stroke-width="2" stroke-linecap="round" fill="none"></path>
+    <path d="M14.5 33 L24 11 L33.5 33" stroke="#E8EEF2" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"></path>
+    <circle cx="24" cy="11" r="2.6" fill="#5EE6C1"></circle>
+  </g>
+  <text x="300" y="270" text-anchor="middle" fill="#E8EEF2" style="font-family: &#39;Space Grotesk&#39;, system-ui, sans-serif; font-weight: 700; font-size: 48px; letter-spacing: -0.02em;">
+    <tspan>Anty</tspan><tspan fill="#5EE6C1">Brain</tspan><tspan>Fog</tspan><tspan fill="#5EE6C1">UR</tspan>
+  </text>
+  <text x="300" y="305" text-anchor="middle" fill="#8A95A3" style="font-family: &#39;JetBrains Mono&#39;, ui-monospace, monospace; font-size: 16px; letter-spacing: 0.22em; text-transform: uppercase;">
+    CO₂ · CLARITY SENSOR
+  </text>
+</svg>
