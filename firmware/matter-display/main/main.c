@@ -9,11 +9,18 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "bsp/bsp.h"
+#include "mhz19.h"
 #include "ui.h"
 
 static const char *TAG = "matter-display";
 
-/* Fallback: set RTC to compile time if not already set. */
+/* MH-Z19C wiring */
+#define MHZ19_UART  UART_NUM_1
+#define MHZ19_RX    18   /* GPIO18 ← sensor TX */
+#define MHZ19_TX    15   /* GPIO15 → sensor RX */
+
+/* ── RTC helpers ────────────────────────────────────────────────────────── */
+
 static void init_time(void)
 {
     time_t now;
@@ -41,9 +48,8 @@ static void init_time(void)
     ESP_LOGI(TAG, "RTC set to compile time: %s %s", __DATE__, __TIME__);
 }
 
-/* Wait up to 3 s for "T<unix_timestamp>\n" on stdin (UART0).
- * Send from Pi shell:  echo "T$(date +%s)" > /dev/ttyACM0
- * This overwrites the compile-time fallback with the real wall clock. */
+/* Wait up to 3 s for "T<unix_timestamp>\n" on UART0.
+ * Send from Pi:  echo "T$(date +%s)" > /dev/ttyACM0   */
 static void sync_time_uart(void)
 {
     ESP_LOGI(TAG, "Waiting 3 s for UART time sync  (send: T%llu)",
@@ -63,19 +69,61 @@ static void sync_time_uart(void)
     int  n = (int)read(STDIN_FILENO, buf, sizeof(buf) - 1);
     if (n < 2 || buf[0] != 'T') return;
 
-    /* strip newline / CR */
     for (int i = 0; i < n; i++) {
         if (buf[i] == '\r' || buf[i] == '\n') { buf[i] = '\0'; break; }
     }
 
     time_t ts = (time_t)atol(buf + 1);
-    if (ts < 1700000000L) return;          /* sanity: must be after Nov 2023 */
+    if (ts < 1700000000L) return;
 
     struct timeval stv = { .tv_sec = ts };
     settimeofday(&stv, NULL);
     ESP_LOGI(TAG, "RTC synced via UART: %s", ctime(&ts));
 }
 
+/* ── CO2 sensor task ─────────────────────────────────────────────────────
+ * Reads MH-Z19C every 5 s and pushes ppm to the UI.
+ * On error keeps the last known value; first 3 failures → shows "---".   */
+static void co2_task(void *arg)
+{
+    (void)arg;
+
+    const mhz19_cfg_t cfg = {
+        .port    = MHZ19_UART,
+        .gpio_rx = MHZ19_RX,
+        .gpio_tx = MHZ19_TX,
+    };
+    ESP_ERROR_CHECK(mhz19_init(&cfg));
+
+    /* MH-Z19C needs up to 3 min warm-up; first reads may be 0 or garbage.
+     * We still push them — UI shows "---" for ppm < 0, which we leave as-is
+     * until we get a plausible value (> 0). */
+    int16_t last_ppm = -1;
+    int     errors   = 0;
+
+    while (1) {
+        int16_t ppm;
+        esp_err_t err = mhz19_read_co2(MHZ19_UART, &ppm);
+
+        if (err == ESP_OK && ppm > 0) {
+            last_ppm = ppm;
+            errors   = 0;
+        } else {
+            errors++;
+            ESP_LOGW(TAG, "CO2 read error #%d: %s", errors, esp_err_to_name(err));
+            if (errors >= 3) last_ppm = -1;   /* show "---" after 3 consecutive fails */
+        }
+
+        if (bsp_lvgl_lock(100)) {
+            ui_co2_update(last_ppm);
+            bsp_lvgl_unlock();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
+/* ── Entry point ─────────────────────────────────────────────────────────── */
 void app_main(void)
 {
     ESP_LOGI(TAG, "Booting matter-display...");
@@ -97,6 +145,8 @@ void app_main(void)
         ESP_ERROR_CHECK(ui_start(2500));
         bsp_lvgl_unlock();
     }
+
+    xTaskCreate(co2_task, "co2", 4096, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "UI running");
 }
