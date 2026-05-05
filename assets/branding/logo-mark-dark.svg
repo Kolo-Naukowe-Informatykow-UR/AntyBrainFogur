@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 48 48" fill="none">
+  <title>AntyBrainFogUR — logo mark</title>
+  <circle cx="24" cy="24" r="20" stroke="#E8EEF2" stroke-width="2.25"></circle>
+  <path d="M9 31 Q14 28 19 31 T29 31 T39 31" stroke="#5EE6C1" stroke-width="2" stroke-linecap="round" fill="none"></path>
+  <path d="M14.5 33 L24 11 L33.5 33" stroke="#E8EEF2" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"></path>
+  <circle cx="24" cy="11" r="2.6" fill="#5EE6C1"></circle>
+</svg>
