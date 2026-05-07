@@ -25,17 +25,32 @@ static const char *TAG = "ui";
 /* ── Screen state ─────────────────────────────────────────────────────── */
 typedef enum { SCR_SPLASH, SCR_CLOCK, SCR_DASHBOARD, SCR_CO2 } screen_t;
 
-static screen_t  s_current   = SCR_SPLASH;
-static lv_obj_t *s_scr_clock = NULL;
-static lv_obj_t *s_scr_dash  = NULL;
-static lv_obj_t *s_scr_co2   = NULL;
+static screen_t  s_current    = SCR_SPLASH;
+static lv_obj_t *s_scr_clock  = NULL;
+static lv_obj_t *s_scr_dash   = NULL;
+static lv_obj_t *s_scr_co2    = NULL;
 
 /* labels updated by timers / sensor */
 static lv_obj_t *s_lbl_time   = NULL;
 static lv_obj_t *s_lbl_date   = NULL;
 static lv_obj_t *s_lbl_ppm    = NULL;
 static lv_obj_t *s_lbl_status = NULL;
-static lv_obj_t *s_ind_co2    = NULL;
+static lv_obj_t *s_badge_co2  = NULL;   /* pill badge container         */
+static lv_obj_t *s_arc_co2    = NULL;
+
+/* ── CO2 history ─────────────────────────────────────────────────────────
+ * Readings are bucketed into 5-minute slots.
+ * 48 slots stored = ~4 h; CO2_HIST_SHOW newest are drawn on screen.      */
+#define CO2_HIST_SLOTS  48
+#define CO2_HIST_SHOW   16
+#define CO2_SLOT_SECS   300   /* 5 minutes */
+
+typedef struct { int32_t sum; uint16_t cnt; } co2_slot_t;
+
+static co2_slot_t  s_hist[CO2_HIST_SLOTS];
+static uint8_t     s_hist_head = 0;
+static time_t      s_hist_slot_ts = 0;
+static lv_obj_t   *s_hist_sq[CO2_HIST_SHOW];
 
 static uint32_t  s_splash_ms  = 2500;
 
@@ -246,7 +261,7 @@ static void inactivity_cb(lv_timer_t *t)
 static void on_clock_tap(lv_event_t *e)
 {
     (void)e;
-    go_to(s_scr_dash, SCR_DASHBOARD);
+    go_to(s_scr_co2, SCR_CO2);   /* CO2 is the key feature — always land here */
 }
 
 static void build_clock_screen(void)
@@ -274,7 +289,7 @@ static void build_clock_screen(void)
     lv_obj_set_style_text_font(s_lbl_date, &lv_font_montserrat_16, 0);
     lv_obj_align(s_lbl_date, LV_ALIGN_CENTER, 0, 40);
 
-    lv_obj_t *hint = mk_label(s_scr_clock, "tap to open", C_INACTIVE, &lv_font_montserrat_14);
+    lv_obj_t *hint = mk_label(s_scr_clock, "tap for CO2", C_INACTIVE, &lv_font_montserrat_14);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -14);
 
     lv_timer_create(clock_tick_cb,  1000, NULL);
@@ -342,17 +357,49 @@ static void build_dashboard_screen(void)
 /* ════════════════════════════════════════════════════════════════════════
  *  CO2 SCREEN
  * ════════════════════════════════════════════════════════════════════════ */
+
+/* Map a ppm average to a palette colour (shared by badge and squares). */
+static uint32_t ppm_to_col(int avg)
+{
+    if (avg < 800)  return C_TEAL;
+    if (avg < 1000) return 0xA8D060;
+    if (avg < 1500) return 0xFFB347;
+    return C_ALERT;
+}
+
+/* Redraw the 16 history squares from the circular buffer. */
+static void hist_refresh(void)
+{
+    if (!s_hist_sq[0]) return;
+    for (int i = 0; i < CO2_HIST_SHOW; i++) {
+        /* i=0 oldest, i=CO2_HIST_SHOW-1 newest */
+        int slot = ((int)s_hist_head - (CO2_HIST_SHOW - 1 - i)
+                    + CO2_HIST_SLOTS) % CO2_HIST_SLOTS;
+        co2_slot_t *sl = &s_hist[slot];
+        uint32_t col = (sl->cnt > 0)
+                       ? ppm_to_col((int)(sl->sum / sl->cnt))
+                       : C_BG;   /* empty = transparent-ish, border stays visible */
+        lv_obj_set_style_bg_color(s_hist_sq[i], lv_color_hex(col), 0);
+    }
+}
+
 static void co2_apply_level(int16_t ppm)
 {
-    uint32_t col;
+    uint32_t    col;
     const char *status;
 
     if (ppm < 0) {
         lv_label_set_text(s_lbl_ppm,    "---");
-        lv_label_set_text(s_lbl_status, "NO SENSOR");
+        lv_label_set_text(s_lbl_status, "NO DATA");
         lv_obj_set_style_text_color(s_lbl_ppm,    lv_color_hex(C_MUTED), 0);
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(C_MUTED), 0);
-        lv_obj_set_style_bg_color(s_ind_co2, lv_color_hex(C_BORDER), 0);
+        if (s_badge_co2)
+            lv_obj_set_style_border_color(s_badge_co2, lv_color_hex(C_INACTIVE), 0);
+        if (s_arc_co2) {
+            lv_arc_set_value(s_arc_co2, 0);
+            lv_obj_set_style_arc_color(s_arc_co2, lv_color_hex(C_INACTIVE),
+                                       LV_PART_INDICATOR);
+        }
         return;
     }
 
@@ -360,15 +407,20 @@ static void co2_apply_level(int16_t ppm)
     snprintf(buf, sizeof(buf), "%d", ppm);
     lv_label_set_text(s_lbl_ppm, buf);
 
-    if      (ppm < 800)  { col = C_TEAL;   status = "GOOD";    }
-    else if (ppm < 1000) { col = 0xA8D060; status = "OK";      }
-    else if (ppm < 1500) { col = 0xFFB347; status = "WARNING"; }
-    else                 { col = C_ALERT;  status = "HIGH";    }
+    if      (ppm < 800)  { col = C_TEAL;   status = "GOOD";     }
+    else if (ppm < 1000) { col = 0xA8D060; status = "OK";       }
+    else if (ppm < 1500) { col = 0xFFB347; status = "HIGH";     }
+    else                 { col = C_ALERT;  status = "CRITICAL"; }
 
     lv_label_set_text(s_lbl_status, status);
     lv_obj_set_style_text_color(s_lbl_ppm,    lv_color_hex(col), 0);
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(col), 0);
-    lv_obj_set_style_bg_color(s_ind_co2, lv_color_hex(col), 0);
+    if (s_badge_co2)
+        lv_obj_set_style_border_color(s_badge_co2, lv_color_hex(col), 0);
+    if (s_arc_co2) {
+        lv_arc_set_value(s_arc_co2, ppm > 2500 ? 100 : (int)(ppm * 100 / 2500));
+        lv_obj_set_style_arc_color(s_arc_co2, lv_color_hex(col), LV_PART_INDICATOR);
+    }
 }
 
 static void on_co2_back(lv_event_t *e)
@@ -381,9 +433,11 @@ static void build_co2_screen(void)
 {
     s_scr_co2 = mk_screen();
 
-    /* top bar with back */
+    /* ════════════════════════════════════════════════════════════════════
+     *  TOPBAR — fixed, 36 px: only back button + LIVE placeholder
+     * ════════════════════════════════════════════════════════════════════ */
     lv_obj_t *topbar = lv_obj_create(s_scr_co2);
-    lv_obj_set_size(topbar, 240, 40);
+    lv_obj_set_size(topbar, 240, 36);
     lv_obj_set_pos(topbar, 0, 0);
     lv_obj_set_style_bg_color(topbar, lv_color_hex(C_BAR), 0);
     lv_obj_set_style_bg_opa(topbar, LV_OPA_COVER, 0);
@@ -391,65 +445,130 @@ static void build_co2_screen(void)
     lv_obj_set_style_border_side(topbar, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_set_style_border_width(topbar, 1, 0);
     lv_obj_set_style_radius(topbar, 0, 0);
-    lv_obj_set_style_pad_hor(topbar, 8, 0);
+    lv_obj_set_style_pad_hor(topbar, 10, 0);
     lv_obj_set_style_pad_ver(topbar, 0, 0);
     lv_obj_clear_flag(topbar, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *back = lv_button_create(topbar);
-    lv_obj_set_size(back, 36, 30);
+    lv_obj_set_size(back, 32, 28);
     lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(back, lv_color_hex(C_TEAL), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(back, LV_OPA_20, LV_STATE_PRESSED);
     lv_obj_set_style_border_width(back, 0, 0);
     lv_obj_set_style_shadow_width(back, 0, 0);
-    lv_obj_set_style_radius(back, 6, 0);
+    lv_obj_set_style_radius(back, 4, 0);
     lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_add_event_cb(back, on_co2_back, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *blbl = mk_label(back, "<", C_TEAL, &lv_font_montserrat_16);
-    lv_obj_center(blbl);
+    lv_obj_center(mk_label(back, "<", C_TEAL, &lv_font_montserrat_14));
 
-    lv_obj_t *title = mk_label(topbar, "CO2 Monitor", C_TEXT, &lv_font_montserrat_14);
-    lv_obj_set_align(title, LV_ALIGN_CENTER);
+    /* LIVE — right side only, no title clutter */
+    lv_obj_t *live_lbl = mk_label(topbar, "* LIVE", C_TEAL, &lv_font_montserrat_14);
+    lv_obj_align(live_lbl, LV_ALIGN_RIGHT_MID, 0, 0);
 
-    /* LIVE */
-    lv_obj_t *live = mk_label(s_scr_co2, "LIVE", C_TEAL, &lv_font_montserrat_14);
-    lv_obj_align(live, LV_ALIGN_TOP_MID, 0, 58);
+    /* ════════════════════════════════════════════════════════════════════
+     *  SCROLLABLE CONTENT — below topbar, taller than viewport
+     *  viewport = 284 px,  content = ~370 px  →  ~86 px scroll travel
+     * ════════════════════════════════════════════════════════════════════ */
+    lv_obj_t *cnt = lv_obj_create(s_scr_co2);
+    lv_obj_set_pos(cnt, 0, 36);
+    lv_obj_set_size(cnt, 240, 284);
+    lv_obj_set_style_bg_color(cnt, lv_color_hex(C_BG), 0);
+    lv_obj_set_style_bg_opa(cnt, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(cnt, 0, 0);
+    lv_obj_set_style_pad_all(cnt, 0, 0);
+    lv_obj_set_scroll_dir(cnt, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(cnt, LV_SCROLLBAR_MODE_ACTIVE);
 
-    /* big ppm number */
-    s_lbl_ppm = lv_label_create(s_scr_co2);
+    /* ── arc (160×160), x_center=120, y_center=100 in cnt coords ─────────── */
+    s_arc_co2 = lv_arc_create(cnt);
+    lv_obj_set_size(s_arc_co2, 160, 160);
+    lv_obj_set_pos(s_arc_co2, 40, 40);               /* center=(120,120) in cnt */
+    lv_arc_set_rotation(s_arc_co2, 135);
+    lv_arc_set_bg_angles(s_arc_co2, 0, 270);
+    lv_arc_set_range(s_arc_co2, 0, 100);
+    lv_arc_set_value(s_arc_co2, 0);
+    lv_obj_clear_flag(s_arc_co2, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_opa(s_arc_co2,    LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_set_style_width(s_arc_co2,  0,             LV_PART_KNOB);
+    lv_obj_set_style_height(s_arc_co2, 0,             LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(s_arc_co2, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(s_arc_co2, lv_color_hex(C_SURFACE),  LV_PART_MAIN);
+    lv_obj_set_style_arc_width(s_arc_co2, 14,                        LV_PART_MAIN);
+    lv_obj_set_style_arc_color(s_arc_co2, lv_color_hex(C_INACTIVE), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(s_arc_co2, 14,                        LV_PART_INDICATOR);
+
+    /* ppm — centered in arc (arc center y=100, font_48 half-height≈27) */
+    s_lbl_ppm = lv_label_create(cnt);
     lv_label_set_text(s_lbl_ppm, "---");
     lv_obj_set_style_text_color(s_lbl_ppm, lv_color_hex(C_MUTED), 0);
     lv_obj_set_style_text_font(s_lbl_ppm, &lv_font_montserrat_48, 0);
-    lv_obj_align(s_lbl_ppm, LV_ALIGN_TOP_MID, 0, 74);
+    lv_obj_align(s_lbl_ppm, LV_ALIGN_TOP_MID, 0, 93);
 
-    lv_obj_t *unit = mk_label(s_scr_co2, "ppm", C_MUTED, &lv_font_montserrat_16);
-    lv_obj_align(unit, LV_ALIGN_TOP_MID, 0, 132);
+    lv_obj_t *unit = mk_label(cnt, "PPM", C_MUTED, &lv_font_montserrat_14);
+    lv_obj_align(unit, LV_ALIGN_TOP_MID, 0, 153);
 
-    /* status */
-    s_lbl_status = lv_label_create(s_scr_co2);
-    lv_label_set_text(s_lbl_status, "NO SENSOR");
+    /* status pill badge */
+    s_badge_co2 = lv_obj_create(cnt);
+    lv_obj_set_size(s_badge_co2, 160, 32);
+    lv_obj_set_pos(s_badge_co2, 40, 222);
+    lv_obj_set_style_bg_color(s_badge_co2,     lv_color_hex(C_SURFACE),  0);
+    lv_obj_set_style_bg_opa(s_badge_co2,       LV_OPA_COVER,             0);
+    lv_obj_set_style_border_color(s_badge_co2, lv_color_hex(C_INACTIVE), 0);
+    lv_obj_set_style_border_width(s_badge_co2, 1,                        0);
+    lv_obj_set_style_radius(s_badge_co2,       16,                       0);
+    lv_obj_set_style_pad_all(s_badge_co2,      0,                        0);
+    lv_obj_clear_flag(s_badge_co2, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_lbl_status = lv_label_create(s_badge_co2);
+    lv_label_set_text(s_lbl_status, "BRAK DANYCH");
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(C_MUTED), 0);
-    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_16, 0);
-    lv_obj_align(s_lbl_status, LV_ALIGN_TOP_MID, 0, 158);
+    lv_obj_set_style_text_font(s_lbl_status,  &lv_font_montserrat_14, 0);
+    lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, 0);
 
-    /* color indicator bar */
-    lv_obj_t *ind_bg = lv_obj_create(s_scr_co2);
-    lv_obj_set_size(ind_bg, 200, 6);
-    lv_obj_align(ind_bg, LV_ALIGN_TOP_MID, 0, 184);
-    lv_obj_set_style_bg_color(ind_bg, lv_color_hex(C_BORDER), 0);
-    lv_obj_set_style_bg_opa(ind_bg, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(ind_bg, 0, 0);
-    lv_obj_set_style_radius(ind_bg, 3, 0);
-    lv_obj_set_style_pad_all(ind_bg, 0, 0);
-    lv_obj_clear_flag(ind_bg, LV_OBJ_FLAG_SCROLLABLE);
+    /* ── history section ─────────────────────────────────────────────────── */
+    lv_obj_t *div = lv_obj_create(cnt);
+    lv_obj_set_size(div, 200, 1);
+    lv_obj_set_pos(div, 20, 294);
+    lv_obj_set_style_bg_color(div, lv_color_hex(C_BORDER), 0);
+    lv_obj_set_style_bg_opa(div, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(div, 0, 0);
+    lv_obj_set_style_pad_all(div, 0, 0);
 
-    s_ind_co2 = lv_obj_create(ind_bg);
-    lv_obj_set_size(s_ind_co2, 200, 6);
-    lv_obj_set_pos(s_ind_co2, 0, 0);
-    lv_obj_set_style_bg_color(s_ind_co2, lv_color_hex(C_BORDER), 0);
-    lv_obj_set_style_bg_opa(s_ind_co2, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(s_ind_co2, 0, 0);
-    lv_obj_set_style_radius(s_ind_co2, 3, 0);
+    lv_obj_t *hlbl = mk_label(cnt, "LAST 1H", C_MUTED, &lv_font_montserrat_14);
+    lv_obj_set_pos(hlbl, 12, 306);
+
+    /* 16 squares  width=12  height=32  gap=2 → total 222px, x_start=9
+     * Empty = C_BG fill + C_INACTIVE border → clearly visible outlines    */
+    for (int i = 0; i < CO2_HIST_SHOW; i++) {
+        s_hist_sq[i] = lv_obj_create(cnt);
+        lv_obj_set_size(s_hist_sq[i], 12, 32);
+        lv_obj_set_pos(s_hist_sq[i], 9 + i * 14, 328);
+        lv_obj_set_style_bg_color(s_hist_sq[i],     lv_color_hex(C_BG),       0);
+        lv_obj_set_style_bg_opa(s_hist_sq[i],       LV_OPA_COVER,             0);
+        lv_obj_set_style_border_color(s_hist_sq[i], lv_color_hex(C_INACTIVE), 0);
+        lv_obj_set_style_border_width(s_hist_sq[i], 1,                        0);
+        lv_obj_set_style_radius(s_hist_sq[i],       3,                        0);
+        lv_obj_set_style_pad_all(s_hist_sq[i],      0,                        0);
+        lv_obj_clear_flag(s_hist_sq[i], LV_OBJ_FLAG_SCROLLABLE);
+    }
+
+    /* colour legend: coloured dot + label × 4, y=330 */
+    static const uint32_t leg_col[] = { C_TEAL, 0xA8D060, 0xFFB347, C_ALERT };
+    static const char    *leg_txt[] = { "< 800", "< 1k",  "< 1.5k", "> 1.5k" };
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *dot = lv_obj_create(cnt);
+        lv_obj_set_size(dot, 8, 8);
+        lv_obj_set_pos(dot, 10 + i * 55, 376);
+        lv_obj_set_style_bg_color(dot,     lv_color_hex(leg_col[i]), 0);
+        lv_obj_set_style_bg_opa(dot,       LV_OPA_COVER,             0);
+        lv_obj_set_style_border_width(dot, 0,                        0);
+        lv_obj_set_style_radius(dot,       2,                        0);
+        lv_obj_set_style_pad_all(dot,      0,                        0);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *ll = mk_label(cnt, leg_txt[i], C_INACTIVE, &lv_font_montserrat_14);
+        lv_obj_set_pos(ll, 22 + i * 55, 372);
+    }
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -479,5 +598,23 @@ esp_err_t ui_start(uint32_t splash_ms)
 void ui_co2_update(int16_t ppm)
 {
     if (!s_lbl_ppm) return;
+
+    /* ── accumulate into history slot ─────────────────────────────────── */
+    if (ppm > 0) {
+        time_t now = time(NULL);
+        if (s_hist_slot_ts == 0) s_hist_slot_ts = now;
+
+        if (now - s_hist_slot_ts >= CO2_SLOT_SECS) {
+            /* advance to next slot */
+            s_hist_head = (s_hist_head + 1) % CO2_HIST_SLOTS;
+            s_hist[s_hist_head].sum = 0;
+            s_hist[s_hist_head].cnt = 0;
+            s_hist_slot_ts = now;
+        }
+        s_hist[s_hist_head].sum += ppm;
+        s_hist[s_hist_head].cnt++;
+        hist_refresh();
+    }
+
     co2_apply_level(ppm);
 }
