@@ -390,7 +390,7 @@ static void co2_apply_level(int16_t ppm)
 
     if (ppm < 0) {
         lv_label_set_text(s_lbl_ppm,    "---");
-        lv_label_set_text(s_lbl_status, "BRAK DANYCH");
+        lv_label_set_text(s_lbl_status, "NO DATA");
         lv_obj_set_style_text_color(s_lbl_ppm,    lv_color_hex(C_MUTED), 0);
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(C_MUTED), 0);
         if (s_badge_co2)
@@ -407,10 +407,10 @@ static void co2_apply_level(int16_t ppm)
     snprintf(buf, sizeof(buf), "%d", ppm);
     lv_label_set_text(s_lbl_ppm, buf);
 
-    if      (ppm < 800)  { col = C_TEAL;   status = "KOMFORTOWY";   }
-    else if (ppm < 1000) { col = 0xA8D060; status = "AKCEPTOWALNY"; }
-    else if (ppm < 1500) { col = 0xFFB347; status = "WYSOKI";       }
-    else                 { col = C_ALERT;  status = "ALARMOWY";     }
+    if      (ppm < 800)  { col = C_TEAL;   status = "GOOD";     }
+    else if (ppm < 1000) { col = 0xA8D060; status = "OK";       }
+    else if (ppm < 1500) { col = 0xFFB347; status = "HIGH";     }
+    else                 { col = C_ALERT;  status = "CRITICAL"; }
 
     lv_label_set_text(s_lbl_status, status);
     lv_obj_set_style_text_color(s_lbl_ppm,    lv_color_hex(col), 0);
@@ -534,7 +534,7 @@ static void build_co2_screen(void)
     lv_obj_set_style_border_width(div, 0, 0);
     lv_obj_set_style_pad_all(div, 0, 0);
 
-    lv_obj_t *hlbl = mk_label(cnt, "OSTATNIE 1H", C_MUTED, &lv_font_montserrat_14);
+    lv_obj_t *hlbl = mk_label(cnt, "LAST 1H", C_MUTED, &lv_font_montserrat_14);
     lv_obj_set_pos(hlbl, 12, 306);
 
     /* 16 squares  width=12  height=32  gap=2 → total 222px, x_start=9
