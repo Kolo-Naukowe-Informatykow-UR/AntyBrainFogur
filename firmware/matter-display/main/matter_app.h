@@ -12,6 +12,7 @@ extern "C" {
 #endif
 
 #include "esp_err.h"
+#include <stdbool.h>
 #include <stdint.h>
 
 /**
@@ -49,6 +50,24 @@ const char *matter_app_get_qr_code(void);
  * Valid after matter_app_init().
  */
 const char *matter_app_get_manual_code(void);
+
+/**
+ * Trigger a Matter factory reset.  Wipes the chip_factory / chip_config /
+ * chip_counters NVS partitions (fabrics, ACLs, network creds) and reboots
+ * the device.  After reboot, BLE commissioning advertising is enabled again
+ * so a controller can re-pair the device.
+ *
+ * Schedules the reset via Server::ScheduleFactoryReset(); does NOT block —
+ * the actual erase + reboot happens asynchronously from the Matter task.
+ */
+void matter_app_factory_reset(void);
+
+/**
+ * Returns true if at least one fabric is currently provisioned (i.e. the
+ * device is commissioned to a controller).  Polled from the UI to reflect
+ * the live commissioning state without depending on event timing.
+ */
+bool matter_app_is_commissioned(void);
 
 #ifdef __cplusplus
 }

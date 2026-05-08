@@ -54,8 +54,14 @@ static lv_obj_t *s_lbl_live         = NULL;   /* topbar LIVE / SETUP label */
 
 /* Matter dashboard tile references */
 static lv_obj_t *s_tile_matter       = NULL;
-static lv_obj_t *s_lbl_matter_status = NULL;
+static lv_obj_t *s_ico_matter        = NULL;   /* big icon glyph in the tile */
+static lv_obj_t *s_lbl_matter_status = NULL;   /* label text under the icon  */
 static bool      s_matter_commissioned = false;
+
+/* Factory-reset progress overlay (created lazily, lives on the top layer) */
+static lv_obj_t *s_reset_overlay = NULL;
+static lv_obj_t *s_reset_bar     = NULL;
+static lv_obj_t *s_reset_pct     = NULL;
 
 /* ── CO2 history ─────────────────────────────────────────────────────────
  * Readings are bucketed into 5-minute slots.
@@ -382,13 +388,19 @@ static void show_matter_popup(void)
     lv_obj_set_style_pad_all(sep, 0, 0);
 
     if (s_matter_commissioned) {
-        /* Big OK glyph + "Device Paired" message */
+        /* Big OK glyph + "Device Paired" message + reset hint */
         lv_obj_t *check = mk_label(card, LV_SYMBOL_OK, C_TEAL, &lv_font_montserrat_48);
-        lv_obj_align(check, LV_ALIGN_CENTER, 0, -30);
+        lv_obj_align(check, LV_ALIGN_CENTER, 0, -50);
         lv_obj_t *msg = mk_label(card, "Device is paired\nwith a controller",
                                  C_TEXT, &lv_font_montserrat_14);
         lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_align(msg, LV_ALIGN_CENTER, 0, 30);
+        lv_obj_align(msg, LV_ALIGN_CENTER, 0, 8);
+        /* Factory-reset hint */
+        lv_obj_t *hint = mk_label(card,
+            LV_SYMBOL_WARNING " Hold BOOT 8 s\nto factory reset",
+            C_ALERT, &lv_font_montserrat_14);
+        lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -52);
     } else {
         const char *qr_payload = matter_app_get_qr_code();
         const char *manual     = matter_app_get_manual_code();
@@ -484,13 +496,27 @@ static void build_dashboard_screen(void)
     t = mk_tile(s_scr_dash, "CO2", "CO2 Monitor", true, on_co2_tile);
     lv_obj_set_pos(t, x0, y0);
 
-    /* Tile 2 — Matter integration (inactive until commissioned) */
+    /* Tile 2 — Matter integration.  Always "active" so it pulses its
+     * pressed style; colour swaps between ALERT (needs pairing) and TEAL
+     * (paired) inside ui_matter_set_commissioned().                         */
     s_tile_matter = mk_tile(s_scr_dash, LV_SYMBOL_BLUETOOTH,
-                            "Matter\nSetup", false, on_matter_tile);
+                            "Pair Now", true, on_matter_tile);
     lv_obj_set_pos(s_tile_matter, x0 + step, y0);
-    /* Store the inner label so we can update it later */
-    s_lbl_matter_status = lv_obj_get_child(s_tile_matter,
-                                           lv_obj_get_child_cnt(s_tile_matter) - 1);
+    /* Tile children: [icon, label] — store refs so we can recolour both */
+    s_ico_matter        = lv_obj_get_child(s_tile_matter, 0);
+    s_lbl_matter_status = lv_obj_get_child(s_tile_matter, 1);
+    /* Initial colours derived from s_matter_commissioned (set by main.c
+     * before the splash finishes via ui_matter_set_commissioned()).        */
+    uint32_t init_accent = s_matter_commissioned ? C_TEAL : C_ALERT;
+    lv_obj_set_style_border_color(s_tile_matter, lv_color_hex(init_accent), 0);
+    if (s_ico_matter) {
+        lv_obj_set_style_text_color(s_ico_matter, lv_color_hex(init_accent), 0);
+    }
+    if (s_lbl_matter_status) {
+        lv_label_set_text(s_lbl_matter_status,
+                          s_matter_commissioned ? "Paired" : "Pair Now");
+        lv_obj_set_style_text_color(s_lbl_matter_status, lv_color_hex(C_TEXT), 0);
+    }
 
     /* Tile 3 — Device Info (active) */
     t = mk_tile(s_scr_dash, LV_SYMBOL_SETTINGS,
@@ -924,17 +950,88 @@ void ui_matter_set_commissioned(bool commissioned)
             lv_color_hex(commissioned ? C_TEAL : C_ALERT), 0);
     }
 
-    /* ── dashboard Matter tile ─────────────────────────────────────────── */
+    /* ── dashboard Matter tile — recolour border, icon and label ──────── */
+    uint32_t accent = commissioned ? C_TEAL : C_ALERT;
     if (s_tile_matter) {
-        lv_obj_set_style_border_color(s_tile_matter,
-            lv_color_hex(commissioned ? C_TEAL : C_BORDER), 0);
+        lv_obj_set_style_border_color(s_tile_matter, lv_color_hex(accent), 0);
+    }
+    if (s_ico_matter) {
+        lv_obj_set_style_text_color(s_ico_matter, lv_color_hex(accent), 0);
     }
     if (s_lbl_matter_status) {
         lv_label_set_text(s_lbl_matter_status,
-                          commissioned ? "Matter\nPaired" : "Matter\nSetup");
+                          commissioned ? "Paired" : "Pair Now");
         lv_obj_set_style_text_color(s_lbl_matter_status,
-            lv_color_hex(commissioned ? C_TEXT : C_INACTIVE), 0);
+            lv_color_hex(C_TEXT), 0);
     }
 
+    bsp_lvgl_unlock();
+}
+
+/* ── Factory-reset progress overlay (top layer, above modals) ───────────── */
+void ui_factory_reset_progress_show(uint8_t pct)
+{
+    if (pct > 100) pct = 100;
+    if (!bsp_lvgl_lock(50)) return;
+
+    if (!s_reset_overlay) {
+        /* Create on top layer so it sits above any modal popup */
+        s_reset_overlay = lv_obj_create(lv_layer_top());
+        lv_obj_set_size(s_reset_overlay, 240, 320);
+        lv_obj_set_pos(s_reset_overlay, 0, 0);
+        lv_obj_set_style_bg_color(s_reset_overlay, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(s_reset_overlay, LV_OPA_90, 0);
+        lv_obj_set_style_border_width(s_reset_overlay, 0, 0);
+        lv_obj_set_style_pad_all(s_reset_overlay, 0, 0);
+        lv_obj_clear_flag(s_reset_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *icon = mk_label(s_reset_overlay, LV_SYMBOL_WARNING,
+                                  C_ALERT, &lv_font_montserrat_48);
+        lv_obj_align(icon, LV_ALIGN_CENTER, 0, -80);
+
+        lv_obj_t *title = mk_label(s_reset_overlay, "Factory Reset",
+                                   C_ALERT, &lv_font_montserrat_24);
+        lv_obj_align(title, LV_ALIGN_CENTER, 0, -28);
+
+        lv_obj_t *hint = mk_label(s_reset_overlay,
+            "Hold BOOT to wipe Matter\nfabrics and reboot",
+            C_TEXT, &lv_font_montserrat_14);
+        lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(hint, LV_ALIGN_CENTER, 0, 8);
+
+        s_reset_bar = lv_bar_create(s_reset_overlay);
+        lv_obj_set_size(s_reset_bar, 180, 8);
+        lv_obj_align(s_reset_bar, LV_ALIGN_CENTER, 0, 56);
+        lv_bar_set_range(s_reset_bar, 0, 100);
+        lv_obj_set_style_bg_color(s_reset_bar, lv_color_hex(C_BORDER), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(s_reset_bar, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(s_reset_bar, 4, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_reset_bar, lv_color_hex(C_ALERT), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_opa(s_reset_bar, LV_OPA_COVER, LV_PART_INDICATOR);
+        lv_obj_set_style_radius(s_reset_bar, 4, LV_PART_INDICATOR);
+
+        s_reset_pct = mk_label(s_reset_overlay, "0%", C_MUTED, &lv_font_montserrat_14);
+        lv_obj_align(s_reset_pct, LV_ALIGN_CENTER, 0, 76);
+    }
+
+    if (s_reset_bar) lv_bar_set_value(s_reset_bar, pct, LV_ANIM_OFF);
+    if (s_reset_pct) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%u%%", (unsigned)pct);
+        lv_label_set_text(s_reset_pct, buf);
+    }
+
+    bsp_lvgl_unlock();
+}
+
+void ui_factory_reset_progress_hide(void)
+{
+    if (!bsp_lvgl_lock(50)) return;
+    if (s_reset_overlay) {
+        lv_obj_del(s_reset_overlay);
+        s_reset_overlay = NULL;
+        s_reset_bar     = NULL;
+        s_reset_pct     = NULL;
+    }
     bsp_lvgl_unlock();
 }

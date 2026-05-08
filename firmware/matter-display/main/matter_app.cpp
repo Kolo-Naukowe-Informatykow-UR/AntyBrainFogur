@@ -30,7 +30,9 @@
 #include <app/server/OnboardingCodesUtil.h>
 #include <credentials/DeviceAttestationCredsProvider.h>
 #include <credentials/examples/DeviceAttestationCredsExample.h>
+#include <credentials/FabricTable.h>
 #include <platform/CHIPDeviceLayer.h>
+#include <platform/ConfigurationManager.h>
 
 static const char *TAG = "matter_app";
 
@@ -45,6 +47,21 @@ static char s_manual_code[32] = {};
 
 const char *matter_app_get_qr_code(void)    { return s_qr_code[0]     ? s_qr_code     : NULL; }
 const char *matter_app_get_manual_code(void){ return s_manual_code[0] ? s_manual_code : NULL; }
+
+void matter_app_factory_reset(void)
+{
+    ESP_LOGW(TAG, "Factory reset requested — wiping fabrics and rebooting");
+    /* Schedules the reset on the CHIP task: clears chip_factory, chip_config,
+     * chip_counters NVS partitions, then reboots.  Async — returns quickly.  */
+    chip::Server::GetInstance().ScheduleFactoryReset();
+}
+
+bool matter_app_is_commissioned(void)
+{
+    /* IsFullyProvisioned() returns true once at least one fabric is stored.
+     * Bool wrap avoids exposing C++ types over the C boundary.              */
+    return chip::DeviceLayer::ConfigurationMgr().IsFullyProvisioned();
+}
 
 /* ── Attribute r/w callback ───────────────────────────────────────────────
  * Called by the Matter stack when a controller reads or writes an attribute.
@@ -166,7 +183,9 @@ esp_err_t matter_app_init(void)
                       chip::RendezvousInformationFlags(chip::RendezvousInformationFlag::kBLE))
             == CHIP_NO_ERROR) {
             s_qr_code[qr_span.size()] = '\0';
-            ESP_LOGI(TAG, "QR code: MT:%s", s_qr_code);
+            /* GetQRCode already includes the "MT:" URI prefix.  Don't add
+             * it again — Matter scanners reject "MT:MT:..." payloads. */
+            ESP_LOGI(TAG, "QR code: %s", s_qr_code);
         } else {
             ESP_LOGW(TAG, "GetQRCode failed (already commissioned?)");
         }

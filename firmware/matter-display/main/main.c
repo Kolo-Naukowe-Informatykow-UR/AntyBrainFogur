@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
 #include "esp_sntp.h"
+#include "driver/gpio.h"
 #include "nvs_flash.h"
 #include "bsp/bsp.h"
 #include "mhz19.h"
@@ -22,6 +23,12 @@ static const char *TAG = "matter-display";
 #define MHZ19_UART  UART_NUM_1
 #define MHZ19_RX    18   /* GPIO18 ← sensor TX */
 #define MHZ19_TX    15   /* GPIO15 → sensor RX */
+
+/* BOOT button on Waveshare ESP32-S3-Touch-LCD-2.8 = GPIO0 (active low). */
+#define BOOT_BTN_GPIO     GPIO_NUM_0
+#define RESET_HOLD_MS     8000   /* total hold time → factory reset    */
+#define RESET_GRACE_MS    1000   /* ignore the first second (debounce) */
+#define RESET_POLL_MS     100
 
 /* ── RTC helpers ────────────────────────────────────────────────────────── */
 
@@ -69,6 +76,60 @@ static void start_sntp(void)
         return;
     }
     ESP_LOGI(TAG, "SNTP started — clock will sync once WiFi connects");
+}
+
+/* ── BOOT-button factory-reset task ─────────────────────────────────────
+ * Polls GPIO0 every 100 ms.  When held continuously for RESET_HOLD_MS,
+ * shows a fullscreen progress overlay and triggers
+ * matter_app_factory_reset() which wipes the chip_* NVS partitions and
+ * reboots.  Press shorter than RESET_GRACE_MS is ignored as debounce.    */
+static void factory_reset_task(void *arg)
+{
+    (void)arg;
+
+    /* GPIO0 has external pull-up on the dev board; we still enable internal
+     * pull-up as a belt-and-braces measure.                                */
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << BOOT_BTN_GPIO,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&io));
+
+    int  held_ms        = 0;
+    bool overlay_shown  = false;
+
+    while (1) {
+        if (gpio_get_level(BOOT_BTN_GPIO) == 0) {
+            held_ms += RESET_POLL_MS;
+
+            if (held_ms > RESET_GRACE_MS) {
+                int span = RESET_HOLD_MS - RESET_GRACE_MS;
+                int pct  = (held_ms - RESET_GRACE_MS) * 100 / span;
+                if (pct > 100) pct = 100;
+
+                ui_factory_reset_progress_show((uint8_t)pct);
+                overlay_shown = true;
+
+                if (held_ms >= RESET_HOLD_MS) {
+                    ESP_LOGW(TAG, "BOOT held %d ms — triggering factory reset",
+                             held_ms);
+                    matter_app_factory_reset();   /* schedules reboot */
+                    /* Stay in the overlay until reboot lands us back at boot ROM */
+                    while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+                }
+            }
+        } else {
+            if (overlay_shown) {
+                ui_factory_reset_progress_hide();
+                overlay_shown = false;
+            }
+            held_ms = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(RESET_POLL_MS));
+    }
 }
 
 /* ── CO2 sensor task ─────────────────────────────────────────────────────
@@ -156,7 +217,14 @@ void app_main(void)
         bsp_lvgl_unlock();
     }
 
+    /* Push the current commissioning state to the UI once the splash is
+     * done.  matter_app emits kCommissioningComplete only on transitions,
+     * so on a cold boot of an already-paired device it would otherwise
+     * never fire and the tile would stay in "Pair Now" alert state.       */
+    ui_matter_set_commissioned(matter_app_is_commissioned());
+
     xTaskCreate(co2_task, "co2", 4096, NULL, 5, NULL);
+    xTaskCreate(factory_reset_task, "fact_reset", 3072, NULL, 4, NULL);
 
     ESP_LOGI(TAG, "UI running");
 }

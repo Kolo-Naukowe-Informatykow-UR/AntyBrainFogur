@@ -17,9 +17,15 @@ void ui_co2_update(int16_t ppm);
 
 /* Update the Matter commissioning status indicator.
  * Thread-safe — acquires the LVGL lock internally.
- * commissioned = true  → "● PAIRED"  (teal)
- * commissioned = false → "○ SETUP"   (muted) */
+ * commissioned = true  → tile/LIVE turn teal, label "Paired"
+ * commissioned = false → tile/LIVE turn alert-orange, label "Pair Now" */
 void ui_matter_set_commissioned(bool commissioned);
+
+/* Show / update / hide a fullscreen overlay used during the BOOT-button
+ * factory-reset long-press.  Thread-safe — acquires LVGL lock internally.
+ * pct = 0..100 (0 = just started, 100 = about to fire).                    */
+void ui_factory_reset_progress_show(uint8_t pct);
+void ui_factory_reset_progress_hide(void);
 
 #ifdef __cplusplus
 }
