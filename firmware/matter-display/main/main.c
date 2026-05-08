@@ -8,6 +8,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_netif_sntp.h"
+#include "esp_sntp.h"
 #include "nvs_flash.h"
 #include "bsp/bsp.h"
 #include "mhz19.h"
@@ -50,37 +52,23 @@ static void init_time(void)
     ESP_LOGI(TAG, "RTC set to compile time: %s %s", __DATE__, __TIME__);
 }
 
-/* Wait up to 3 s for "T<unix_timestamp>\n" on UART0.
- * Send from Pi:  echo "T$(date +%s)" > /dev/ttyACM0   */
-static void sync_time_uart(void)
+/* Start SNTP so the clock auto-syncs once Matter brings up WiFi.
+ * Polish timezone — DST (CEST) handled automatically per POSIX TZ rules.
+ * pool.ntp.org resolves & connects whenever lwip has internet; before then
+ * the clock stays at the compile-time fallback set by init_time().          */
+static void start_sntp(void)
 {
-    ESP_LOGI(TAG, "Waiting 3 s for UART time sync  (send: T%llu)",
-             (unsigned long long)time(NULL));
+    setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+    tzset();
 
-    fd_set rfds;
-    struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
-    FD_ZERO(&rfds);
-    FD_SET(STDIN_FILENO, &rfds);
-
-    if (select(STDIN_FILENO + 1, &rfds, NULL, NULL, &tv) <= 0) {
-        ESP_LOGI(TAG, "No UART sync — keeping compile-time clock");
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    cfg.start = true;
+    esp_err_t err = esp_netif_sntp_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "SNTP init failed: %s", esp_err_to_name(err));
         return;
     }
-
-    char buf[24] = {0};
-    int  n = (int)read(STDIN_FILENO, buf, sizeof(buf) - 1);
-    if (n < 2 || buf[0] != 'T') return;
-
-    for (int i = 0; i < n; i++) {
-        if (buf[i] == '\r' || buf[i] == '\n') { buf[i] = '\0'; break; }
-    }
-
-    time_t ts = (time_t)atol(buf + 1);
-    if (ts < 1700000000L) return;
-
-    struct timeval stv = { .tv_sec = ts };
-    settimeofday(&stv, NULL);
-    ESP_LOGI(TAG, "RTC synced via UART: %s", ctime(&ts));
+    ESP_LOGI(TAG, "SNTP started — clock will sync once WiFi connects");
 }
 
 /* ── CO2 sensor task ─────────────────────────────────────────────────────
@@ -143,8 +131,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(nvs_ret);
 
-    init_time();
-    sync_time_uart();
+    init_time();   /* compile-time fallback until SNTP syncs */
 
     ESP_ERROR_CHECK(bsp_init());
     ESP_ERROR_CHECK(bsp_display_start());
@@ -152,6 +139,10 @@ void app_main(void)
     /* Start Matter BEFORE LVGL — NimBLE BLE stack needs memory early.
      * Logs the QR code + manual pairing code to the serial console.        */
     ESP_ERROR_CHECK(matter_app_init());
+
+    /* SNTP after Matter so esp_netif/lwip are already running.  Sync happens
+     * asynchronously the moment WiFi STA gets an IP.                       */
+    start_sntp();
 
     lv_display_t *disp  = NULL;
     lv_indev_t   *indev = NULL;

@@ -4,6 +4,11 @@
 #include "bsp/bsp.h"
 #include "lvgl.h"
 #include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_mac.h"
+#include "esp_app_desc.h"
+#include "esp_timer.h"
+#include "esp_system.h"
 #include <time.h>
 #include <stdio.h>
 #include <string.h>
@@ -25,12 +30,18 @@ static const char *TAG = "ui";
 #define C_INACTIVE 0x3D5068   /* inactive / disabled                      */
 
 /* ── Screen state ─────────────────────────────────────────────────────── */
-typedef enum { SCR_SPLASH, SCR_CLOCK, SCR_DASHBOARD, SCR_CO2 } screen_t;
+typedef enum { SCR_SPLASH, SCR_CLOCK, SCR_DASHBOARD, SCR_CO2, SCR_INFO } screen_t;
 
 static screen_t  s_current    = SCR_SPLASH;
 static lv_obj_t *s_scr_clock  = NULL;
 static lv_obj_t *s_scr_dash   = NULL;
 static lv_obj_t *s_scr_co2    = NULL;
+static lv_obj_t *s_scr_info   = NULL;
+
+/* live-updated labels on the Device Info screen */
+static lv_obj_t *s_lbl_info_ip     = NULL;
+static lv_obj_t *s_lbl_info_heap   = NULL;
+static lv_obj_t *s_lbl_info_uptime = NULL;
 
 /* labels updated by timers / sensor */
 static lv_obj_t *s_lbl_time         = NULL;
@@ -310,18 +321,26 @@ static void build_clock_screen(void)
  * ════════════════════════════════════════════════════════════════════════ */
 static void on_co2_tile(lv_event_t *e) { (void)e; go_to(s_scr_co2, SCR_CO2); }
 
-/* ── Matter tile tap: show pairing code popup ───────────────────────────── */
+/* ── Matter pairing popup ──────────────────────────────────────────────── */
 static void on_matter_popup_close(lv_event_t *e)
 {
     lv_obj_t *popup = (lv_obj_t *)lv_event_get_user_data(e);
     lv_obj_del(popup);
 }
 
-static void on_matter_tile(lv_event_t *e)
+/* Build a modal popup with QR + manual pairing code (or "Paired" message
+ * when commissioned).  Layout (card 220×280, padding 12 → inner 196×256):
+ *
+ *   y=0    title       (icon + "MATTER SETUP")
+ *   y=20   separator   (180×1)
+ *   y=28   QR code     (140×140 + 6px white quiet zone) → ends y=180
+ *   y=190  "Manual code" hint (mont_14)
+ *   y=210  manual code string (mont_16, teal)
+ *   y=224  close button (100×32, bottom-aligned, ends y=256)
+ *
+ * No overlap.  `s_matter_commissioned` chooses commissioned variant.        */
+static void show_matter_popup(void)
 {
-    (void)e;
-
-    /* Full-screen semi-transparent overlay — acts as modal backdrop */
     lv_obj_t *overlay = lv_obj_create(lv_scr_act());
     lv_obj_set_size(overlay, 240, 320);
     lv_obj_set_pos(overlay, 0, 0);
@@ -330,13 +349,10 @@ static void on_matter_tile(lv_event_t *e)
     lv_obj_set_style_border_width(overlay, 0, 0);
     lv_obj_set_style_pad_all(overlay, 0, 0);
     lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
-    /* tap on backdrop also closes the popup */
-    lv_obj_add_event_cb(overlay, on_matter_popup_close,
-                        LV_EVENT_CLICKED, overlay);
+    lv_obj_add_event_cb(overlay, on_matter_popup_close, LV_EVENT_CLICKED, overlay);
 
-    /* Card centered in overlay */
     lv_obj_t *card = lv_obj_create(overlay);
-    lv_obj_set_size(card, 210, 210);
+    lv_obj_set_size(card, 220, 300);
     lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_color(card, lv_color_hex(C_SURFACE), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
@@ -345,14 +361,15 @@ static void on_matter_tile(lv_event_t *e)
     lv_obj_set_style_radius(card, 12, 0);
     lv_obj_set_style_pad_all(card, 12, 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    /* Prevent clicks on the card from bubbling to the overlay (which closes it) */
+    /* stop clicks bubbling to the overlay (which closes the popup) */
     lv_obj_clear_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-    /* Title */
+    /* Title with bluetooth icon */
     lv_obj_t *title = mk_label(card,
-        s_matter_commissioned ? "MATTER  PAIRED" : "MATTER  SETUP",
-        s_matter_commissioned ? C_TEAL : C_MUTED,
-        &lv_font_montserrat_14);
+        s_matter_commissioned ? LV_SYMBOL_BLUETOOTH "  MATTER PAIRED"
+                              : LV_SYMBOL_BLUETOOTH "  MATTER SETUP",
+        s_matter_commissioned ? C_TEAL : C_TEXT,
+        &lv_font_montserrat_16);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
 
     /* Separator */
@@ -365,52 +382,62 @@ static void on_matter_tile(lv_event_t *e)
     lv_obj_set_style_pad_all(sep, 0, 0);
 
     if (s_matter_commissioned) {
-        lv_obj_t *msg = mk_label(card, "Device is paired\nwith a controller.",
+        /* Big OK glyph + "Device Paired" message */
+        lv_obj_t *check = mk_label(card, LV_SYMBOL_OK, C_TEAL, &lv_font_montserrat_48);
+        lv_obj_align(check, LV_ALIGN_CENTER, 0, -30);
+        lv_obj_t *msg = mk_label(card, "Device is paired\nwith a controller",
                                  C_TEXT, &lv_font_montserrat_14);
         lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_align(msg, LV_ALIGN_CENTER, 0, -10);
+        lv_obj_align(msg, LV_ALIGN_CENTER, 0, 30);
     } else {
         const char *qr_payload = matter_app_get_qr_code();
         const char *manual     = matter_app_get_manual_code();
 
         if (qr_payload) {
-            /* Matter URI is "MT:" + base38 payload — that's what controller apps scan */
             char qr_uri[128];
             snprintf(qr_uri, sizeof(qr_uri), "MT:%s", qr_payload);
-
             lv_obj_t *qr = lv_qrcode_create(card);
-            lv_qrcode_set_size(qr, 130);
+            lv_qrcode_set_size(qr, 140);
             lv_qrcode_set_dark_color(qr, lv_color_hex(0x000000));
             lv_qrcode_set_light_color(qr, lv_color_hex(0xFFFFFF));
             lv_qrcode_update(qr, qr_uri, strlen(qr_uri));
-            /* white quiet-zone padding around the modules */
+            /* 6px white quiet zone — required by most QR scanners */
             lv_obj_set_style_border_color(qr, lv_color_hex(0xFFFFFF), 0);
-            lv_obj_set_style_border_width(qr, 4, 0);
-            lv_obj_align(qr, LV_ALIGN_TOP_MID, 0, 30);
+            lv_obj_set_style_border_width(qr, 6, 0);
+            lv_obj_align(qr, LV_ALIGN_TOP_MID, 0, 28);
         } else {
-            lv_obj_t *boot = mk_label(card, "Booting...\n(no code yet)",
+            lv_obj_t *boot = mk_label(card, LV_SYMBOL_REFRESH "  Booting...",
                                       C_MUTED, &lv_font_montserrat_14);
-            lv_obj_set_style_text_align(boot, LV_TEXT_ALIGN_CENTER, 0);
-            lv_obj_align(boot, LV_ALIGN_CENTER, 0, -10);
+            lv_obj_align(boot, LV_ALIGN_TOP_MID, 0, 90);
         }
 
         if (manual) {
-            lv_obj_t *code = mk_label(card, manual, C_TEAL, &lv_font_montserrat_14);
-            lv_obj_align(code, LV_ALIGN_BOTTOM_MID, 0, -34);
+            /* Anchor from bottom so code never collides with the close button.
+             * Stack: hint @ -68, code @ -42, button @ 0 — gives 12 px gap
+             * between code and button, and 8 px between hint and code.       */
+            lv_obj_t *hint = mk_label(card, "manual code",
+                                      C_MUTED, &lv_font_montserrat_14);
+            lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -68);
+            lv_obj_t *code = mk_label(card, manual, C_TEAL, &lv_font_montserrat_16);
+            lv_obj_align(code, LV_ALIGN_BOTTOM_MID, 0, -44);
         }
     }
 
-    /* Close button */
+    /* Close button — full-width, anchored to bottom of card */
     lv_obj_t *btn = lv_button_create(card);
-    lv_obj_set_size(btn, 80, 28);
+    lv_obj_set_size(btn, 120, 32);
     lv_obj_align(btn, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_bg_color(btn, lv_color_hex(C_TEAL_DIM), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(btn, 0, 0);
     lv_obj_set_style_radius(btn, 8, 0);
     lv_obj_add_event_cb(btn, on_matter_popup_close, LV_EVENT_CLICKED, overlay);
-    lv_obj_center(mk_label(btn, "CLOSE", C_TEXT, &lv_font_montserrat_14));
+    lv_obj_center(mk_label(btn, LV_SYMBOL_CLOSE "  Close",
+                           C_TEXT, &lv_font_montserrat_14));
 }
+
+static void on_matter_tile(lv_event_t *e) { (void)e; show_matter_popup(); }
+static void on_live_tap(lv_event_t *e)   { (void)e; show_matter_popup(); }
 
 static lv_obj_t *mk_tile(lv_obj_t *parent, const char *icon,
                           const char *label, bool active, lv_event_cb_t cb)
@@ -442,6 +469,8 @@ static lv_obj_t *mk_tile(lv_obj_t *parent, const char *icon,
     return t;
 }
 
+static void on_info_tile(lv_event_t *e) { (void)e; if (s_scr_info) go_to(s_scr_info, SCR_INFO); }
+
 static void build_dashboard_screen(void)
 {
     s_scr_dash = mk_screen();
@@ -456,16 +485,20 @@ static void build_dashboard_screen(void)
     lv_obj_set_pos(t, x0, y0);
 
     /* Tile 2 — Matter integration (inactive until commissioned) */
-    s_tile_matter = mk_tile(s_scr_dash, "M", "Matter\nSetup", false, on_matter_tile);
+    s_tile_matter = mk_tile(s_scr_dash, LV_SYMBOL_BLUETOOTH,
+                            "Matter\nSetup", false, on_matter_tile);
     lv_obj_set_pos(s_tile_matter, x0 + step, y0);
     /* Store the inner label so we can update it later */
     s_lbl_matter_status = lv_obj_get_child(s_tile_matter,
                                            lv_obj_get_child_cnt(s_tile_matter) - 1);
 
-    t = mk_tile(s_scr_dash, "-", "Coming Soon", false, NULL);
+    /* Tile 3 — Device Info (active) */
+    t = mk_tile(s_scr_dash, LV_SYMBOL_SETTINGS,
+                "Device\nInfo", true, on_info_tile);
     lv_obj_set_pos(t, x0, y0 + step);
 
-    t = mk_tile(s_scr_dash, "-", "Coming Soon", false, NULL);
+    /* Tile 4 — placeholder */
+    t = mk_tile(s_scr_dash, LV_SYMBOL_PLUS, "Coming Soon", false, NULL);
     lv_obj_set_pos(t, x0 + step, y0 + step);
 }
 
@@ -576,12 +609,17 @@ static void build_co2_screen(void)
     lv_obj_add_event_cb(back, on_co2_back, LV_EVENT_CLICKED, NULL);
     lv_obj_center(mk_label(back, "<", C_TEAL, &lv_font_montserrat_14));
 
-    /* LIVE / SETUP indicator — right side; updated by ui_matter_set_commissioned() */
+    /* LIVE / SETUP indicator — right side; updated by ui_matter_set_commissioned().
+     * Tap opens the Matter pairing popup (QR + manual code, or paired status). */
     s_lbl_live = mk_label(topbar,
-                          s_matter_commissioned ? "● PAIRED" : "○ SETUP",
-                          s_matter_commissioned ? C_TEAL : C_MUTED,
+                          s_matter_commissioned ? LV_SYMBOL_BLUETOOTH " PAIRED"
+                                                : LV_SYMBOL_BLUETOOTH " SETUP",
+                          s_matter_commissioned ? C_TEAL : C_ALERT,
                           &lv_font_montserrat_14);
     lv_obj_align(s_lbl_live, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_flag(s_lbl_live, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(s_lbl_live, 8);
+    lv_obj_add_event_cb(s_lbl_live, on_live_tap, LV_EVENT_CLICKED, NULL);
 
     /* ════════════════════════════════════════════════════════════════════
      *  SCROLLABLE CONTENT — below topbar, taller than viewport
@@ -690,6 +728,134 @@ static void build_co2_screen(void)
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+ *  DEVICE INFO SCREEN
+ * ════════════════════════════════════════════════════════════════════════ */
+static void on_info_back(lv_event_t *e) { (void)e; go_to(s_scr_dash, SCR_DASHBOARD); }
+
+/* Add a label/value row at given y. Returns the value label so it can be
+ * stored for live updates. */
+static lv_obj_t *info_row(lv_obj_t *parent, int y,
+                          const char *label, const char *value)
+{
+    lv_obj_t *l = mk_label(parent, label, C_MUTED, &lv_font_montserrat_14);
+    lv_obj_set_pos(l, 12, y);
+
+    lv_obj_t *v = mk_label(parent, value, C_TEXT, &lv_font_montserrat_14);
+    lv_obj_align(v, LV_ALIGN_TOP_RIGHT, -12, y);
+    return v;
+}
+
+static void info_tick_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_current != SCR_INFO) return;
+
+    if (s_lbl_info_heap) {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%lu KB",
+                 (unsigned long)(esp_get_free_heap_size() / 1024));
+        lv_label_set_text(s_lbl_info_heap, buf);
+    }
+    if (s_lbl_info_ip) {
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        esp_netif_ip_info_t ip = {0};
+        if (netif && esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr) {
+            char buf[20];
+            snprintf(buf, sizeof(buf), IPSTR, IP2STR(&ip.ip));
+            lv_label_set_text(s_lbl_info_ip, buf);
+        } else {
+            lv_label_set_text(s_lbl_info_ip, "—");
+        }
+    }
+    if (s_lbl_info_uptime) {
+        int up = (int)(esp_timer_get_time() / 1000000);
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%02d:%02d:%02d",
+                 up / 3600, (up / 60) % 60, up % 60);
+        lv_label_set_text(s_lbl_info_uptime, buf);
+    }
+}
+
+static void build_info_screen(void)
+{
+    s_scr_info = mk_screen();
+
+    /* Topbar — same shape as CO2 screen for consistency */
+    lv_obj_t *topbar = lv_obj_create(s_scr_info);
+    lv_obj_set_size(topbar, 240, 36);
+    lv_obj_set_pos(topbar, 0, 0);
+    lv_obj_set_style_bg_color(topbar, lv_color_hex(C_BAR), 0);
+    lv_obj_set_style_bg_opa(topbar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(topbar, lv_color_hex(C_TEAL), 0);
+    lv_obj_set_style_border_side(topbar, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(topbar, 1, 0);
+    lv_obj_set_style_radius(topbar, 0, 0);
+    lv_obj_set_style_pad_hor(topbar, 10, 0);
+    lv_obj_set_style_pad_ver(topbar, 0, 0);
+    lv_obj_clear_flag(topbar, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *back = lv_button_create(topbar);
+    lv_obj_set_size(back, 32, 28);
+    lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(C_TEAL), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(back, LV_OPA_20, LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(back, 0, 0);
+    lv_obj_set_style_shadow_width(back, 0, 0);
+    lv_obj_set_style_radius(back, 4, 0);
+    lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_add_event_cb(back, on_info_back, LV_EVENT_CLICKED, NULL);
+    lv_obj_center(mk_label(back, LV_SYMBOL_LEFT, C_TEAL, &lv_font_montserrat_14));
+
+    lv_obj_t *t = mk_label(topbar, LV_SYMBOL_SETTINGS "  DEVICE INFO",
+                           C_TEAL, &lv_font_montserrat_14);
+    lv_obj_align(t, LV_ALIGN_RIGHT_MID, 0, 0);
+
+    /* Content rows */
+    int y    = 50;
+    int step = 26;
+
+    /* MAC address */
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char mac_buf[20];
+    snprintf(mac_buf, sizeof(mac_buf),
+             "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    info_row(s_scr_info, y, LV_SYMBOL_WIFI " MAC", mac_buf);
+    y += step;
+
+    s_lbl_info_ip     = info_row(s_scr_info, y, LV_SYMBOL_WIFI " IP",        "—");
+    y += step;
+    s_lbl_info_heap   = info_row(s_scr_info, y, LV_SYMBOL_DRIVE " HEAP",     "—");
+    y += step;
+    s_lbl_info_uptime = info_row(s_scr_info, y, LV_SYMBOL_REFRESH " UPTIME", "00:00:00");
+    y += step;
+
+    /* App + IDF versions */
+    const esp_app_desc_t *desc = esp_app_get_description();
+    info_row(s_scr_info, y,
+             LV_SYMBOL_FILE " APP",
+             (desc && desc->version[0]) ? desc->version : "?");
+    y += step;
+    info_row(s_scr_info, y,
+             LV_SYMBOL_FILE " IDF",
+             (desc && desc->idf_ver[0]) ? desc->idf_ver : "?");
+    y += step;
+
+    /* Matter cluster */
+    info_row(s_scr_info, y, LV_SYMBOL_BLUETOOTH " MATTER", "CO2 0x040D");
+    y += step;
+
+    /* Footer hint */
+    lv_obj_t *hint = mk_label(s_scr_info,
+        "AntyBrainFogUR  •  KNI",
+        C_INACTIVE, &lv_font_montserrat_14);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -12);
+
+    lv_timer_create(info_tick_cb, 1000, NULL);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
  *  SPLASH DONE → build remaining screens
  * ════════════════════════════════════════════════════════════════════════ */
 static void on_splash_done(lv_anim_t *a)
@@ -698,6 +864,7 @@ static void on_splash_done(lv_anim_t *a)
     build_clock_screen();
     build_dashboard_screen();
     build_co2_screen();
+    build_info_screen();
     go_to(s_scr_clock, SCR_CLOCK);
     ESP_LOGI(TAG, "UI ready");
 }
@@ -750,9 +917,11 @@ void ui_matter_set_commissioned(bool commissioned)
 
     /* ── topbar LIVE indicator ─────────────────────────────────────────── */
     if (s_lbl_live) {
-        lv_label_set_text(s_lbl_live, commissioned ? "● PAIRED" : "○ SETUP");
+        lv_label_set_text(s_lbl_live,
+            commissioned ? LV_SYMBOL_BLUETOOTH " PAIRED"
+                         : LV_SYMBOL_BLUETOOTH " SETUP");
         lv_obj_set_style_text_color(s_lbl_live,
-            lv_color_hex(commissioned ? C_TEAL : C_MUTED), 0);
+            lv_color_hex(commissioned ? C_TEAL : C_ALERT), 0);
     }
 
     /* ── dashboard Matter tile ─────────────────────────────────────────── */
