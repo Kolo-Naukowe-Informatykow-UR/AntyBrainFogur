@@ -158,6 +158,31 @@ esp_err_t matter_app_init(void)
         }
     }
 
+    /* Enable the optional levels on the AirQuality cluster (auto-created by
+     * the air_quality_sensor endpoint).  The base cluster ships with only
+     * Unknown / Good / Poor — adding Fair / Moderate / VeryPoor / Extremely-
+     * Poor lets controllers display the full 7-level scale.                */
+    {
+        /* Header / impl mismatch in esp-matter v1.4: esp_matter_feature.h
+         * declares the AirQuality optional features as mod / vpoor / xpoor,
+         * but esp_matter_feature.cpp actually defines them as moderate /
+         * very_poor / extremely_poor.  The header symbols don't link.
+         * Forward-declare the names that DO exist in the static lib.       */
+        namespace aq_feat = esp_matter::cluster::air_quality::feature;
+        cluster_t *aq_cl = cluster::get(ep, AirQuality::Id);
+        if (aq_cl) {
+            aq_feat::fair::add(aq_cl);
+            extern esp_err_t moderate_add(cluster_t *) asm("_ZN10esp_matter7cluster11air_quality7feature8moderate3addEPj");
+            extern esp_err_t very_poor_add(cluster_t *) asm("_ZN10esp_matter7cluster11air_quality7feature9very_poor3addEPj");
+            extern esp_err_t extremely_poor_add(cluster_t *) asm("_ZN10esp_matter7cluster11air_quality7feature14extremely_poor3addEPj");
+            moderate_add(aq_cl);
+            very_poor_add(aq_cl);
+            extremely_poor_add(aq_cl);
+        } else {
+            ESP_LOGW(TAG, "AirQuality cluster not found on AQ sensor endpoint");
+        }
+    }
+
     /* ── Device Attestation Credentials (example / dev only) ─────────── */
     chip::Credentials::SetDeviceAttestationCredentialsProvider(
         chip::Credentials::Examples::GetExampleDACProvider());
@@ -219,8 +244,30 @@ void matter_app_co2_update(int16_t ppm_co2)
         CarbonDioxideConcentrationMeasurement::Id,
         CarbonDioxideConcentrationMeasurement::Attributes::MeasuredValue::Id,
         &val);
-
     if (err != ESP_OK) {
         ESP_LOGD(TAG, "CO2 attribute::update failed: %s", esp_err_to_name(err));
     }
+
+    /* Map ppm → AirQualityEnum (Matter spec 2.10.2) so HA et al show the
+     * "Air Quality" entity instead of "unknown".  Thresholds follow common
+     * indoor-air guidance (ASHRAE 62.1 / WHO):
+     *   <800   = Good          1
+     *   <1000  = Fair          2
+     *   <1500  = Moderate      3
+     *   <2000  = Poor          4
+     *   <2500  = VeryPoor      5
+     *   ≥2500  = ExtremelyPoor 6                                          */
+    uint8_t aq;
+    if      (ppm_co2 < 800)  aq = 1;
+    else if (ppm_co2 < 1000) aq = 2;
+    else if (ppm_co2 < 1500) aq = 3;
+    else if (ppm_co2 < 2000) aq = 4;
+    else if (ppm_co2 < 2500) aq = 5;
+    else                     aq = 6;
+
+    esp_matter_attr_val_t aq_val;
+    aq_val.type   = ESP_MATTER_VAL_TYPE_ENUM8;
+    aq_val.val.u8 = aq;
+    attribute::update(s_endpoint_id, AirQuality::Id,
+                      AirQuality::Attributes::AirQuality::Id, &aq_val);
 }

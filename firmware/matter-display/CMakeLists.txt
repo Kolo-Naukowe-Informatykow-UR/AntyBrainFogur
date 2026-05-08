@@ -31,6 +31,31 @@ if(DEFINED ENV{ESP_MATTER_PATH})
     idf_build_set_property(CXX_COMPILE_OPTIONS
         "-std=gnu++17;-DCHIP_HAVE_CONFIG_H;-Wno-overloaded-virtual"
         APPEND)
+
+    # ── KNI / AntyBrainFogUR branding shown in Matter Basic Information
+    # cluster (controllers like Apple Home, Google Home, Home Assistant
+    # display these as Vendor / Model / Firmware version).  Override the
+    # CHIP_DEVICE_CONFIG_DEVICE_* defaults from CHIPDeviceConfig.h.
+    #
+    # NOTE: no spaces inside the values — these defines also flow into the
+    # GN build (chip static lib) via build_args.gn, and GN's argv parser
+    # splits unquoted whitespace into separate tokens.  Stick to ASCII
+    # without spaces (use - or _ if you need a separator).
+    #
+    # NOTE: VendorID stays 0xFFF1 — changing it would require a custom
+    # signed DAC, which the example provider doesn't support.            ─
+    idf_build_set_property(COMPILE_DEFINITIONS
+        "CHIP_DEVICE_CONFIG_DEVICE_VENDOR_NAME=\"KNI_UR\""
+        APPEND)
+    idf_build_set_property(COMPILE_DEFINITIONS
+        "CHIP_DEVICE_CONFIG_DEVICE_PRODUCT_NAME=\"AntyBrainFogUR_CO2\""
+        APPEND)
+    idf_build_set_property(COMPILE_DEFINITIONS
+        "CHIP_DEVICE_CONFIG_DEFAULT_DEVICE_HARDWARE_VERSION_STRING=\"S3-LCD2.8_rev1\""
+        APPEND)
+    idf_build_set_property(COMPILE_DEFINITIONS
+        "CHIP_DEVICE_CONFIG_DEVICE_SOFTWARE_VERSION_STRING=\"0.2.0-matter\""
+        APPEND)
 endif()
 
 # ── AntyBrainFogUR palette — overrides any managed-component defaults ────
