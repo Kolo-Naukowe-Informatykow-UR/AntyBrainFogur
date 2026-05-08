@@ -8,9 +8,14 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_netif_sntp.h"
+#include "esp_sntp.h"
+#include "driver/gpio.h"
+#include "nvs_flash.h"
 #include "bsp/bsp.h"
 #include "mhz19.h"
 #include "ui.h"
+#include "matter_app.h"
 
 static const char *TAG = "matter-display";
 
@@ -18,6 +23,12 @@ static const char *TAG = "matter-display";
 #define MHZ19_UART  UART_NUM_1
 #define MHZ19_RX    18   /* GPIO18 ← sensor TX */
 #define MHZ19_TX    15   /* GPIO15 → sensor RX */
+
+/* BOOT button on Waveshare ESP32-S3-Touch-LCD-2.8 = GPIO0 (active low). */
+#define BOOT_BTN_GPIO     GPIO_NUM_0
+#define RESET_HOLD_MS     8000   /* total hold time → factory reset    */
+#define RESET_GRACE_MS    1000   /* ignore the first second (debounce) */
+#define RESET_POLL_MS     100
 
 /* ── RTC helpers ────────────────────────────────────────────────────────── */
 
@@ -48,37 +59,77 @@ static void init_time(void)
     ESP_LOGI(TAG, "RTC set to compile time: %s %s", __DATE__, __TIME__);
 }
 
-/* Wait up to 3 s for "T<unix_timestamp>\n" on UART0.
- * Send from Pi:  echo "T$(date +%s)" > /dev/ttyACM0   */
-static void sync_time_uart(void)
+/* Start SNTP so the clock auto-syncs once Matter brings up WiFi.
+ * Polish timezone — DST (CEST) handled automatically per POSIX TZ rules.
+ * pool.ntp.org resolves & connects whenever lwip has internet; before then
+ * the clock stays at the compile-time fallback set by init_time().          */
+static void start_sntp(void)
 {
-    ESP_LOGI(TAG, "Waiting 3 s for UART time sync  (send: T%llu)",
-             (unsigned long long)time(NULL));
+    setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+    tzset();
 
-    fd_set rfds;
-    struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
-    FD_ZERO(&rfds);
-    FD_SET(STDIN_FILENO, &rfds);
-
-    if (select(STDIN_FILENO + 1, &rfds, NULL, NULL, &tv) <= 0) {
-        ESP_LOGI(TAG, "No UART sync — keeping compile-time clock");
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    cfg.start = true;
+    esp_err_t err = esp_netif_sntp_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "SNTP init failed: %s", esp_err_to_name(err));
         return;
     }
+    ESP_LOGI(TAG, "SNTP started — clock will sync once WiFi connects");
+}
 
-    char buf[24] = {0};
-    int  n = (int)read(STDIN_FILENO, buf, sizeof(buf) - 1);
-    if (n < 2 || buf[0] != 'T') return;
+/* ── BOOT-button factory-reset task ─────────────────────────────────────
+ * Polls GPIO0 every 100 ms.  When held continuously for RESET_HOLD_MS,
+ * shows a fullscreen progress overlay and triggers
+ * matter_app_factory_reset() which wipes the chip_* NVS partitions and
+ * reboots.  Press shorter than RESET_GRACE_MS is ignored as debounce.    */
+static void factory_reset_task(void *arg)
+{
+    (void)arg;
 
-    for (int i = 0; i < n; i++) {
-        if (buf[i] == '\r' || buf[i] == '\n') { buf[i] = '\0'; break; }
+    /* GPIO0 has external pull-up on the dev board; we still enable internal
+     * pull-up as a belt-and-braces measure.                                */
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << BOOT_BTN_GPIO,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&io));
+
+    int  held_ms        = 0;
+    bool overlay_shown  = false;
+
+    while (1) {
+        if (gpio_get_level(BOOT_BTN_GPIO) == 0) {
+            held_ms += RESET_POLL_MS;
+
+            if (held_ms > RESET_GRACE_MS) {
+                int span = RESET_HOLD_MS - RESET_GRACE_MS;
+                int pct  = (held_ms - RESET_GRACE_MS) * 100 / span;
+                if (pct > 100) pct = 100;
+
+                ui_factory_reset_progress_show((uint8_t)pct);
+                overlay_shown = true;
+
+                if (held_ms >= RESET_HOLD_MS) {
+                    ESP_LOGW(TAG, "BOOT held %d ms — triggering factory reset",
+                             held_ms);
+                    matter_app_factory_reset();   /* schedules reboot */
+                    /* Stay in the overlay until reboot lands us back at boot ROM */
+                    while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+                }
+            }
+        } else {
+            if (overlay_shown) {
+                ui_factory_reset_progress_hide();
+                overlay_shown = false;
+            }
+            held_ms = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(RESET_POLL_MS));
     }
-
-    time_t ts = (time_t)atol(buf + 1);
-    if (ts < 1700000000L) return;
-
-    struct timeval stv = { .tv_sec = ts };
-    settimeofday(&stv, NULL);
-    ESP_LOGI(TAG, "RTC synced via UART: %s", ctime(&ts));
 }
 
 /* ── CO2 sensor task ─────────────────────────────────────────────────────
@@ -119,6 +170,9 @@ static void co2_task(void *arg)
             bsp_lvgl_unlock();
         }
 
+        /* Push the same reading to the Matter CO2 cluster */
+        matter_app_co2_update(last_ppm);
+
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
@@ -128,11 +182,28 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "Booting matter-display...");
 
-    init_time();
-    sync_time_uart();
+    /* NVS must be initialised before WiFi, BLE, or Matter touch it. */
+    esp_err_t nvs_ret = nvs_flash_init();
+    if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES ||
+        nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS partition needs erase — reflashing");
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_ret);
+
+    init_time();   /* compile-time fallback until SNTP syncs */
 
     ESP_ERROR_CHECK(bsp_init());
     ESP_ERROR_CHECK(bsp_display_start());
+
+    /* Start Matter BEFORE LVGL — NimBLE BLE stack needs memory early.
+     * Logs the QR code + manual pairing code to the serial console.        */
+    ESP_ERROR_CHECK(matter_app_init());
+
+    /* SNTP after Matter so esp_netif/lwip are already running.  Sync happens
+     * asynchronously the moment WiFi STA gets an IP.                       */
+    start_sntp();
 
     lv_display_t *disp  = NULL;
     lv_indev_t   *indev = NULL;
@@ -146,7 +217,14 @@ void app_main(void)
         bsp_lvgl_unlock();
     }
 
+    /* Push the current commissioning state to the UI once the splash is
+     * done.  matter_app emits kCommissioningComplete only on transitions,
+     * so on a cold boot of an already-paired device it would otherwise
+     * never fire and the tile would stay in "Pair Now" alert state.       */
+    ui_matter_set_commissioned(matter_app_is_commissioned());
+
     xTaskCreate(co2_task, "co2", 4096, NULL, 5, NULL);
+    xTaskCreate(factory_reset_task, "fact_reset", 3072, NULL, 4, NULL);
 
     ESP_LOGI(TAG, "UI running");
 }

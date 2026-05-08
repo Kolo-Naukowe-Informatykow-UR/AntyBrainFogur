@@ -1,0 +1,18 @@
+# Custom partition table — AntyBrainFogUR  (16 MB flash, no OTA)
+#
+# Offsets                                           Size
+# 0x0000–0x8FFF  bootloader + partition table (IDF)
+# 0x9000         nvs           24 KB
+# 0xF000         phy_init       4 KB
+# 0x10000        factory app    6 MB
+# 0x610000       chip_factory  24 KB  (Matter factory credentials)
+# 0x616000       chip_config    8 KB  (Matter operational config)
+# 0x618000       chip_counters  4 KB  (Matter persistent counters)
+#
+# Name,          Type,  SubType,  Offset,   Size
+nvs,             data,  nvs,      0x9000,   0x6000
+phy_init,        data,  phy,      0xF000,   0x1000
+factory,         app,   factory,  0x10000,  0x600000
+chip_factory,    data,  nvs,      0x610000, 0x6000
+chip_config,     data,  nvs,      0x616000, 0x2000
+chip_counters,   data,  nvs,      0x618000, 0x1000
