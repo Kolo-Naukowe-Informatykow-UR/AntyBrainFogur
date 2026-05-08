@@ -63,6 +63,11 @@ static lv_obj_t *s_reset_overlay = NULL;
 static lv_obj_t *s_reset_bar     = NULL;
 static lv_obj_t *s_reset_pct     = NULL;
 
+/* Matter pairing popup tracker — used to auto-close on kCommissioningComplete
+ * and to suppress overlap when a "PAIRED" toast is already on screen.        */
+static lv_obj_t *s_matter_overlay = NULL;
+static lv_obj_t *s_paired_toast   = NULL;
+
 /* ── CO2 history ─────────────────────────────────────────────────────────
  * Readings are bucketed into 5-minute slots.
  * 48 slots stored = ~4 h; CO2_HIST_SHOW newest are drawn on screen.      */
@@ -331,7 +336,9 @@ static void on_co2_tile(lv_event_t *e) { (void)e; go_to(s_scr_co2, SCR_CO2); }
 static void on_matter_popup_close(lv_event_t *e)
 {
     lv_obj_t *popup = (lv_obj_t *)lv_event_get_user_data(e);
+    if (!popup) return;
     lv_obj_del(popup);
+    if (popup == s_matter_overlay) s_matter_overlay = NULL;
 }
 
 /* Build a modal popup with QR + manual pairing code (or "Paired" message
@@ -347,7 +354,10 @@ static void on_matter_popup_close(lv_event_t *e)
  * No overlap.  `s_matter_commissioned` chooses commissioned variant.        */
 static void show_matter_popup(void)
 {
+    /* Re-show is a no-op while one is already open */
+    if (s_matter_overlay) return;
     lv_obj_t *overlay = lv_obj_create(lv_scr_act());
+    s_matter_overlay = overlay;
     lv_obj_set_size(overlay, 240, 320);
     lv_obj_set_pos(overlay, 0, 0);
     lv_obj_set_style_bg_color(overlay, lv_color_hex(0x000000), 0);
@@ -406,13 +416,13 @@ static void show_matter_popup(void)
         const char *manual     = matter_app_get_manual_code();
 
         if (qr_payload) {
-            char qr_uri[128];
-            snprintf(qr_uri, sizeof(qr_uri), "MT:%s", qr_payload);
+            /* qr_payload already starts with "MT:" — encode it as-is.
+             * Doubling the prefix produces "MT:MT:..." which scanners reject. */
             lv_obj_t *qr = lv_qrcode_create(card);
             lv_qrcode_set_size(qr, 140);
             lv_qrcode_set_dark_color(qr, lv_color_hex(0x000000));
             lv_qrcode_set_light_color(qr, lv_color_hex(0xFFFFFF));
-            lv_qrcode_update(qr, qr_uri, strlen(qr_uri));
+            lv_qrcode_update(qr, qr_payload, strlen(qr_payload));
             /* 6px white quiet zone — required by most QR scanners */
             lv_obj_set_style_border_color(qr, lv_color_hex(0xFFFFFF), 0);
             lv_obj_set_style_border_width(qr, 6, 0);
@@ -450,6 +460,66 @@ static void show_matter_popup(void)
 
 static void on_matter_tile(lv_event_t *e) { (void)e; show_matter_popup(); }
 static void on_live_tap(lv_event_t *e)   { (void)e; show_matter_popup(); }
+
+/* ── "Just paired!" celebratory toast ───────────────────────────────────────
+ * Shown for ~4 s after kCommissioningComplete fires.  Lives on the top
+ * layer so it sits above any open Matter setup popup or the dashboard.    */
+static void on_paired_toast_done(lv_timer_t *t)
+{
+    lv_obj_t *toast = (lv_obj_t *)lv_timer_get_user_data(t);
+    if (toast) lv_obj_del(toast);
+    s_paired_toast = NULL;
+    lv_timer_delete(t);
+}
+
+static void show_paired_toast(void)
+{
+    /* If a pairing popup is open, close it — we'll replace it with the toast */
+    if (s_matter_overlay) {
+        lv_obj_del(s_matter_overlay);
+        s_matter_overlay = NULL;
+    }
+    if (s_paired_toast) return;   /* already showing */
+
+    lv_obj_t *overlay = lv_obj_create(lv_layer_top());
+    s_paired_toast = overlay;
+    lv_obj_set_size(overlay, 240, 320);
+    lv_obj_set_pos(overlay, 0, 0);
+    lv_obj_set_style_bg_color(overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(overlay, LV_OPA_70, 0);
+    lv_obj_set_style_border_width(overlay, 0, 0);
+    lv_obj_set_style_pad_all(overlay, 0, 0);
+    lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *card = lv_obj_create(overlay);
+    lv_obj_set_size(card, 220, 220);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(C_SURFACE), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(C_TEAL), 0);
+    lv_obj_set_style_border_width(card, 2, 0);
+    lv_obj_set_style_radius(card, 16, 0);
+    lv_obj_set_style_pad_all(card, 12, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Big check */
+    lv_obj_t *check = mk_label(card, LV_SYMBOL_OK, C_TEAL, &lv_font_montserrat_48);
+    lv_obj_align(check, LV_ALIGN_TOP_MID, 0, 16);
+
+    /* PAIRED — big, teal */
+    lv_obj_t *title = mk_label(card, "PAIRED", C_TEAL, &lv_font_montserrat_24);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, 18);
+
+    /* Sexi sub-line */
+    lv_obj_t *msg = mk_label(card, "Successfully connected\nto your controller",
+                             C_TEXT, &lv_font_montserrat_14);
+    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(msg, LV_ALIGN_BOTTOM_MID, 0, -8);
+
+    /* Auto-dismiss after 4 s */
+    lv_timer_t *timer = lv_timer_create(on_paired_toast_done, 4000, overlay);
+    lv_timer_set_repeat_count(timer, 1);
+}
 
 static lv_obj_t *mk_tile(lv_obj_t *parent, const char *icon,
                           const char *label, bool active, lv_event_cb_t cb)
@@ -934,12 +1004,18 @@ void ui_co2_update(int16_t ppm)
  * Called from the Matter event task; acquires LVGL lock internally.        */
 void ui_matter_set_commissioned(bool commissioned)
 {
+    bool was_commissioned = s_matter_commissioned;
     s_matter_commissioned = commissioned;
 
     /* s_lbl_live / s_tile_matter are NULL until CO2 screen is built */
     if (!s_lbl_live && !s_tile_matter) return;
 
     if (!bsp_lvgl_lock(100)) return;
+
+    /* Trigger the celebratory toast on the "just paired" transition */
+    if (commissioned && !was_commissioned) {
+        show_paired_toast();
+    }
 
     /* ── topbar LIVE indicator ─────────────────────────────────────────── */
     if (s_lbl_live) {
