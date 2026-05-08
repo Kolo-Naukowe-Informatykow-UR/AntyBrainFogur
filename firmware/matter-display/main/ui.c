@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "matter_app.h"
 #include "kni_logo.h"
 #include "bsp/bsp.h"
 #include "lvgl.h"
@@ -6,6 +7,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
 static const char *TAG = "ui";
 
@@ -31,12 +33,18 @@ static lv_obj_t *s_scr_dash   = NULL;
 static lv_obj_t *s_scr_co2    = NULL;
 
 /* labels updated by timers / sensor */
-static lv_obj_t *s_lbl_time   = NULL;
-static lv_obj_t *s_lbl_date   = NULL;
-static lv_obj_t *s_lbl_ppm    = NULL;
-static lv_obj_t *s_lbl_status = NULL;
-static lv_obj_t *s_badge_co2  = NULL;   /* pill badge container         */
-static lv_obj_t *s_arc_co2    = NULL;
+static lv_obj_t *s_lbl_time         = NULL;
+static lv_obj_t *s_lbl_date         = NULL;
+static lv_obj_t *s_lbl_ppm          = NULL;
+static lv_obj_t *s_lbl_status       = NULL;
+static lv_obj_t *s_badge_co2        = NULL;   /* pill badge container      */
+static lv_obj_t *s_arc_co2          = NULL;
+static lv_obj_t *s_lbl_live         = NULL;   /* topbar LIVE / SETUP label */
+
+/* Matter dashboard tile references */
+static lv_obj_t *s_tile_matter       = NULL;
+static lv_obj_t *s_lbl_matter_status = NULL;
+static bool      s_matter_commissioned = false;
 
 /* ── CO2 history ─────────────────────────────────────────────────────────
  * Readings are bucketed into 5-minute slots.
@@ -302,6 +310,108 @@ static void build_clock_screen(void)
  * ════════════════════════════════════════════════════════════════════════ */
 static void on_co2_tile(lv_event_t *e) { (void)e; go_to(s_scr_co2, SCR_CO2); }
 
+/* ── Matter tile tap: show pairing code popup ───────────────────────────── */
+static void on_matter_popup_close(lv_event_t *e)
+{
+    lv_obj_t *popup = (lv_obj_t *)lv_event_get_user_data(e);
+    lv_obj_del(popup);
+}
+
+static void on_matter_tile(lv_event_t *e)
+{
+    (void)e;
+
+    /* Full-screen semi-transparent overlay — acts as modal backdrop */
+    lv_obj_t *overlay = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(overlay, 240, 320);
+    lv_obj_set_pos(overlay, 0, 0);
+    lv_obj_set_style_bg_color(overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(overlay, LV_OPA_70, 0);
+    lv_obj_set_style_border_width(overlay, 0, 0);
+    lv_obj_set_style_pad_all(overlay, 0, 0);
+    lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+    /* tap on backdrop also closes the popup */
+    lv_obj_add_event_cb(overlay, on_matter_popup_close,
+                        LV_EVENT_CLICKED, overlay);
+
+    /* Card centered in overlay */
+    lv_obj_t *card = lv_obj_create(overlay);
+    lv_obj_set_size(card, 210, 210);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(C_SURFACE), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(C_TEAL), 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_pad_all(card, 12, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    /* Prevent clicks on the card from bubbling to the overlay (which closes it) */
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    /* Title */
+    lv_obj_t *title = mk_label(card,
+        s_matter_commissioned ? "MATTER  PAIRED" : "MATTER  SETUP",
+        s_matter_commissioned ? C_TEAL : C_MUTED,
+        &lv_font_montserrat_14);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+
+    /* Separator */
+    lv_obj_t *sep = lv_obj_create(card);
+    lv_obj_set_size(sep, 180, 1);
+    lv_obj_align(sep, LV_ALIGN_TOP_MID, 0, 22);
+    lv_obj_set_style_bg_color(sep, lv_color_hex(C_BORDER), 0);
+    lv_obj_set_style_bg_opa(sep, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(sep, 0, 0);
+    lv_obj_set_style_pad_all(sep, 0, 0);
+
+    if (s_matter_commissioned) {
+        lv_obj_t *msg = mk_label(card, "Device is paired\nwith a controller.",
+                                 C_TEXT, &lv_font_montserrat_14);
+        lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(msg, LV_ALIGN_CENTER, 0, -10);
+    } else {
+        const char *qr_payload = matter_app_get_qr_code();
+        const char *manual     = matter_app_get_manual_code();
+
+        if (qr_payload) {
+            /* Matter URI is "MT:" + base38 payload — that's what controller apps scan */
+            char qr_uri[128];
+            snprintf(qr_uri, sizeof(qr_uri), "MT:%s", qr_payload);
+
+            lv_obj_t *qr = lv_qrcode_create(card);
+            lv_qrcode_set_size(qr, 130);
+            lv_qrcode_set_dark_color(qr, lv_color_hex(0x000000));
+            lv_qrcode_set_light_color(qr, lv_color_hex(0xFFFFFF));
+            lv_qrcode_update(qr, qr_uri, strlen(qr_uri));
+            /* white quiet-zone padding around the modules */
+            lv_obj_set_style_border_color(qr, lv_color_hex(0xFFFFFF), 0);
+            lv_obj_set_style_border_width(qr, 4, 0);
+            lv_obj_align(qr, LV_ALIGN_TOP_MID, 0, 30);
+        } else {
+            lv_obj_t *boot = mk_label(card, "Booting...\n(no code yet)",
+                                      C_MUTED, &lv_font_montserrat_14);
+            lv_obj_set_style_text_align(boot, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_align(boot, LV_ALIGN_CENTER, 0, -10);
+        }
+
+        if (manual) {
+            lv_obj_t *code = mk_label(card, manual, C_TEAL, &lv_font_montserrat_14);
+            lv_obj_align(code, LV_ALIGN_BOTTOM_MID, 0, -34);
+        }
+    }
+
+    /* Close button */
+    lv_obj_t *btn = lv_button_create(card);
+    lv_obj_set_size(btn, 80, 28);
+    lv_obj_align(btn, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(C_TEAL_DIM), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(btn, 0, 0);
+    lv_obj_set_style_radius(btn, 8, 0);
+    lv_obj_add_event_cb(btn, on_matter_popup_close, LV_EVENT_CLICKED, overlay);
+    lv_obj_center(mk_label(btn, "CLOSE", C_TEXT, &lv_font_montserrat_14));
+}
+
 static lv_obj_t *mk_tile(lv_obj_t *parent, const char *icon,
                           const char *label, bool active, lv_event_cb_t cb)
 {
@@ -337,18 +447,23 @@ static void build_dashboard_screen(void)
     s_scr_dash = mk_screen();
     mk_topbar(s_scr_dash, "KNI", "AntyBrainFogUR");
 
-    /* 2x2 grid: tile=104, gap=8, total=216 → x_off=12, y_off=66 */
+    /* 2×2 grid: tile=104, gap=8, total=216 → x_off=12, y_off=66 */
     int x0 = 12, y0 = 66, step = 112;
 
+    /* Tile 1 — CO2 Monitor (active) */
     lv_obj_t *t;
-    t = mk_tile(s_scr_dash, "CO2", "CO2 Monitor", true,  on_co2_tile);
-    lv_obj_set_pos(t, x0,        y0);
+    t = mk_tile(s_scr_dash, "CO2", "CO2 Monitor", true, on_co2_tile);
+    lv_obj_set_pos(t, x0, y0);
+
+    /* Tile 2 — Matter integration (inactive until commissioned) */
+    s_tile_matter = mk_tile(s_scr_dash, "M", "Matter\nSetup", false, on_matter_tile);
+    lv_obj_set_pos(s_tile_matter, x0 + step, y0);
+    /* Store the inner label so we can update it later */
+    s_lbl_matter_status = lv_obj_get_child(s_tile_matter,
+                                           lv_obj_get_child_cnt(s_tile_matter) - 1);
 
     t = mk_tile(s_scr_dash, "-", "Coming Soon", false, NULL);
-    lv_obj_set_pos(t, x0 + step, y0);
-
-    t = mk_tile(s_scr_dash, "-", "Coming Soon", false, NULL);
-    lv_obj_set_pos(t, x0,        y0 + step);
+    lv_obj_set_pos(t, x0, y0 + step);
 
     t = mk_tile(s_scr_dash, "-", "Coming Soon", false, NULL);
     lv_obj_set_pos(t, x0 + step, y0 + step);
@@ -461,9 +576,12 @@ static void build_co2_screen(void)
     lv_obj_add_event_cb(back, on_co2_back, LV_EVENT_CLICKED, NULL);
     lv_obj_center(mk_label(back, "<", C_TEAL, &lv_font_montserrat_14));
 
-    /* LIVE — right side only, no title clutter */
-    lv_obj_t *live_lbl = mk_label(topbar, "* LIVE", C_TEAL, &lv_font_montserrat_14);
-    lv_obj_align(live_lbl, LV_ALIGN_RIGHT_MID, 0, 0);
+    /* LIVE / SETUP indicator — right side; updated by ui_matter_set_commissioned() */
+    s_lbl_live = mk_label(topbar,
+                          s_matter_commissioned ? "● PAIRED" : "○ SETUP",
+                          s_matter_commissioned ? C_TEAL : C_MUTED,
+                          &lv_font_montserrat_14);
+    lv_obj_align(s_lbl_live, LV_ALIGN_RIGHT_MID, 0, 0);
 
     /* ════════════════════════════════════════════════════════════════════
      *  SCROLLABLE CONTENT — below topbar, taller than viewport
@@ -520,7 +638,7 @@ static void build_co2_screen(void)
     lv_obj_clear_flag(s_badge_co2, LV_OBJ_FLAG_SCROLLABLE);
 
     s_lbl_status = lv_label_create(s_badge_co2);
-    lv_label_set_text(s_lbl_status, "BRAK DANYCH");
+    lv_label_set_text(s_lbl_status, "NO DATA");
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(C_MUTED), 0);
     lv_obj_set_style_text_font(s_lbl_status,  &lv_font_montserrat_14, 0);
     lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, 0);
@@ -617,4 +735,37 @@ void ui_co2_update(int16_t ppm)
     }
 
     co2_apply_level(ppm);
+}
+
+/* ── Matter commissioning status ─────────────────────────────────────────
+ * Called from the Matter event task; acquires LVGL lock internally.        */
+void ui_matter_set_commissioned(bool commissioned)
+{
+    s_matter_commissioned = commissioned;
+
+    /* s_lbl_live / s_tile_matter are NULL until CO2 screen is built */
+    if (!s_lbl_live && !s_tile_matter) return;
+
+    if (!bsp_lvgl_lock(100)) return;
+
+    /* ── topbar LIVE indicator ─────────────────────────────────────────── */
+    if (s_lbl_live) {
+        lv_label_set_text(s_lbl_live, commissioned ? "● PAIRED" : "○ SETUP");
+        lv_obj_set_style_text_color(s_lbl_live,
+            lv_color_hex(commissioned ? C_TEAL : C_MUTED), 0);
+    }
+
+    /* ── dashboard Matter tile ─────────────────────────────────────────── */
+    if (s_tile_matter) {
+        lv_obj_set_style_border_color(s_tile_matter,
+            lv_color_hex(commissioned ? C_TEAL : C_BORDER), 0);
+    }
+    if (s_lbl_matter_status) {
+        lv_label_set_text(s_lbl_matter_status,
+                          commissioned ? "Matter\nPaired" : "Matter\nSetup");
+        lv_obj_set_style_text_color(s_lbl_matter_status,
+            lv_color_hex(commissioned ? C_TEXT : C_INACTIVE), 0);
+    }
+
+    bsp_lvgl_unlock();
 }

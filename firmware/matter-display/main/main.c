@@ -8,9 +8,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "nvs_flash.h"
 #include "bsp/bsp.h"
 #include "mhz19.h"
 #include "ui.h"
+#include "matter_app.h"
 
 static const char *TAG = "matter-display";
 
@@ -119,6 +121,9 @@ static void co2_task(void *arg)
             bsp_lvgl_unlock();
         }
 
+        /* Push the same reading to the Matter CO2 cluster */
+        matter_app_co2_update(last_ppm);
+
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
@@ -128,11 +133,25 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "Booting matter-display...");
 
+    /* NVS must be initialised before WiFi, BLE, or Matter touch it. */
+    esp_err_t nvs_ret = nvs_flash_init();
+    if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES ||
+        nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS partition needs erase — reflashing");
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_ret);
+
     init_time();
     sync_time_uart();
 
     ESP_ERROR_CHECK(bsp_init());
     ESP_ERROR_CHECK(bsp_display_start());
+
+    /* Start Matter BEFORE LVGL — NimBLE BLE stack needs memory early.
+     * Logs the QR code + manual pairing code to the serial console.        */
+    ESP_ERROR_CHECK(matter_app_init());
 
     lv_display_t *disp  = NULL;
     lv_indev_t   *indev = NULL;
